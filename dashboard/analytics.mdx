@@ -1,0 +1,384 @@
+---
+title: Analytics
+description: Team performance metrics, code quality insights, and contribution patterns
+icon: bar-chart
+---
+
+The Analytics page provides deep insights into team performance, code quality trends, and developer contributions with interactive charts and data visualizations.
+
+## Overview
+
+Analytics is organized into four tabs:
+
+1. **Overview** - High-level metrics and activity charts
+2. **Team** - Contributor profiles and strengths
+3. **Repos** - Repository-level statistics
+4. **Insights** - Confidence scores and merge time analysis
+
+## Filter Bar
+
+All tabs share a unified filter system:
+
+### Repository Filter
+
+<Info>
+  Only connected repositories appear in this dropdown. Disconnected repos are excluded.
+</Info>
+
+- **All repositories** (default)
+- List of connected repos (e.g., `owner/repo-name`)
+
+### Author Filter
+
+- **All authors** (default)
+- List of authors from analytics data (e.g., `@username`)
+
+### Time Range Filter
+
+- **This week** (7 days)
+- **Last 30 days** (default)
+- **Last 90 days**
+
+### Active Filters
+
+When filters are applied, chips appear showing:
+
+```
+[owner/repo ✕]  [@username ✕]
+
+Clear all
+```
+
+Click the ✕ to remove individual filters or "Clear all" to reset.
+
+## Overview Tab
+
+### Key Performance Indicators
+
+Four KPI cards display:
+
+<CardGroup cols={2}>
+  <Card title="Total PRs" icon="bar-chart-3">
+    Total number of pull requests in the selected timeframe
+  </Card>
+  <Card title="Success Rate" icon="trending-up">
+    Percentage of PRs successfully merged
+  </Card>
+  <Card title="Avg Merge Time" icon="clock">
+    Average hours from PR open to merge
+  </Card>
+  <Card title="Avg PR Size" icon="git-merge">
+    Average lines of code changed per PR
+  </Card>
+</CardGroup>
+
+### PR Size Area Chart
+
+A multi-line area chart showing:
+
+- **Green area**: Lines added (additions)
+- **Red area**: Lines deleted (deletions)
+- **Teal area**: Net change (absolute difference)
+
+**Chart features:**
+
+- X-axis: Date (MM/DD format)
+- Y-axis: Lines of code (abbreviated: 1k, 2k, etc.)
+- Interactive tooltip showing exact values
+- Gradient fills for visual clarity
+
+**Bottom stats:**
+
+```
+Average Additions | Average Deletions | Total PRs
+    45,678       |      12,345       |    47
+```
+
+### Activity Timeline
+
+Line chart showing review activity over time:
+
+- **Amber line**: Total reviews
+- **Green line**: Completed reviews
+- **Red line**: Failed reviews
+
+**Features:**
+
+- Smooth curve (monotone interpolation)
+- X-axis shows date range based on filter (7/30/90 days)
+- Y-axis shows review count
+- Hover tooltip with exact values
+
+### Verdict Pie Chart
+
+Circular donut chart showing AI decision distribution:
+
+- **Green**: Approved PRs
+- **Red**: Changes Requested
+- **Amber**: Needs Discussion
+
+**Legend below chart:**
+
+```
+● Approved            [████░░░░░░] 23
+● Changes Requested   [██░░░░░░░░] 8
+● Needs Discussion    [██░░░░░░░░] 5
+```
+
+Each row shows:
+
+- Colored dot indicator
+- Verdict name
+- Horizontal progress bar
+- Total count
+
+## Team Tab
+
+<Warning>
+  Team data requires at least one connected repository. If no repos are connected, an empty state appears.
+</Warning>
+
+Contributor profile cards display:
+
+### Card Layout
+
+- **Avatar**: Colored circle with first letter of username
+- **Username**: `@username` with bold styling
+- **PR Badge**: Count of PRs by this author
+- **Profile Summary**: AI-generated description (if available)
+- **Strengths**: Green badges showing areas of expertise
+- **Patterns**: Amber badges showing recurring behaviors
+
+**Example strengths:**
+
+```
+✓ Strong API design
+✓ Excellent test coverage
+✓ Clean TypeScript types
+```
+
+**Example patterns:**
+
+```
+⚠ Tends to create large PRs
+⚠ Frequent async/await issues
+```
+
+### Empty State
+
+If no contributor data exists:
+
+```
+👥 No contributor data yet
+
+Connect a repo and complete some reviews.
+```
+
+## Repos Tab
+
+Table view of repository statistics:
+
+| Repository | PRs | Merged | Issues |
+|------------|-----|--------|--------|
+| owner/repo | 47  | 42 (89.4%) | 12 |
+| other/repo | 23  | 18 (78.3%) | 5  |
+
+**Column details:**
+
+- **Repository**: Full repo name in monospace
+- **PRs**: Total PR count
+- **Merged**: Count and percentage in parentheses
+- **Issues**: Total issues flagged (red if > 0)
+
+**Hover effect**: Row background changes to `#191919`
+
+### Empty State
+
+If filtering by a specific repo with no data:
+
+```
+No data for owner/repo.
+```
+
+## Insights Tab
+
+### Confidence Distribution
+
+Bar chart showing AI confidence scores (1-5):
+
+- **Red bar (1/5)**: Very low confidence
+- **Orange bar (2/5)**: Low confidence
+- **Amber bar (3/5)**: Medium confidence
+- **Light green bar (4/5)**: High confidence
+- **Green bar (5/5)**: Very high confidence
+
+**Interpretation:**
+
+<AccordionGroup>
+  <Accordion title="High confidence (4-5)">
+    The AI is very certain about its recommendations. Likely based on clear patterns and best practices.
+  </Accordion>
+  <Accordion title="Medium confidence (3)">
+    The AI has some uncertainty. May require human judgment or team discussion.
+  </Accordion>
+  <Accordion title="Low confidence (1-2)">
+    The AI detected complex or ambiguous code. Strongly recommend manual review.
+  </Accordion>
+</AccordionGroup>
+
+### Merge Time Stats
+
+Four stat boxes showing time-to-merge metrics:
+
+<CardGroup cols={2}>
+  <Card title="Avg" icon="clock">
+    Mean time from PR open to merge
+  </Card>
+  <Card title="Median" icon="clock">
+    50th percentile merge time (less affected by outliers)
+  </Card>
+  <Card title="Fastest" icon="zap">
+    Shortest merge time in dataset
+  </Card>
+  <Card title="Slowest" icon="timer">
+    Longest merge time in dataset
+  </Card>
+</CardGroup>
+
+All values displayed in hours (e.g., "12.5h").
+
+### Author Performance Table
+
+Detailed per-developer breakdown:
+
+| Author | PRs | Merged | Issues | Confidence |
+|--------|-----|--------|--------|------------|
+| @alice | 28  | 26     | 3      | 4.2/5      |
+| @bob   | 19  | 15     | 8      | 3.8/5      |
+
+**Column descriptions:**
+
+- **Author**: GitHub username
+- **PRs**: Total PRs opened
+- **Merged**: Successfully merged PRs (green)
+- **Issues**: Issues flagged by AI (red)
+- **Confidence**: Average AI confidence score
+
+**Sorting**: Currently manual, sorted by PR count descending
+
+## Data Refresh
+
+All analytics data refreshes automatically when:
+
+- Filter values change
+- A new PR review completes
+- Page regains focus after 5+ minutes
+
+<Tip>
+  Use the browser's refresh button to force an immediate data reload.
+</Tip>
+
+## Loading States
+
+While fetching analytics:
+
+- **KPI cards**: 4 skeleton rectangles (28px height)
+- **Charts**: Full-height skeletons with rounded corners
+- **Tables**: Multiple skeleton rows
+
+All skeletons have a subtle pulse animation.
+
+## Technical Details
+
+### API Endpoints
+
+```
+GET /api/analytics/summary
+GET /api/analytics/timeline?days={days}
+GET /api/analytics/insights?days={days}
+GET /api/analytics/contributors?repo={repo}
+GET /api/repos
+```
+
+### Data Models
+
+```typescript
+interface AnalyticsSummary {
+  total_reviews: number;
+  success_rate: number;
+  avg_processing_seconds: number;
+  avg_merge_hours: number | null;
+  avg_pr_size: number | null;
+  last_week_activity: WeeklyPR[];
+}
+
+interface AnalyticsInsights {
+  period_days: number;
+  verdicts: { APPROVE: number; REQUEST_CHANGES: number; NEEDS_DISCUSSION: number };
+  confidence_distribution: Record<string, number>;
+  merge_time: MergeTimeStats;
+  per_author: AuthorStats[];
+  per_repo: RepoStats[];
+}
+
+interface Contributor {
+  username: string;
+  profile_summary: string | null;
+  patterns: string[];
+  strengths: string[];
+  pr_count: number;
+  last_seen_pr: number | null;
+}
+```
+
+## Chart Library
+
+All charts use **Recharts** with custom styling:
+
+- Dark theme (`#1A1A1A` backgrounds)
+- Monospace font (Geist Mono) for labels
+- Responsive containers (100% width)
+- Custom tooltips with brand colors
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start Broad" icon="expand">
+    Begin with "All repositories" and "All authors" to see overall trends.
+  </Card>
+  <Card title="Drill Down" icon="search">
+    Apply filters to investigate specific repos or developers.
+  </Card>
+  <Card title="Compare Timeframes" icon="calendar">
+    Toggle between 7/30/90 days to identify seasonal patterns.
+  </Card>
+  <Card title="Watch Confidence" icon="gauge">
+    Low confidence scores may indicate areas needing better documentation.
+  </Card>
+</CardGroup>
+
+## Common Insights
+
+### High Merge Times
+
+If average merge time exceeds 24 hours:
+
+- Check if PRs are too large (use PR Size chart)
+- Look for bottlenecks in review process
+- Consider setting team response time goals
+
+### Low Success Rates
+
+If success rate drops below 80%:
+
+- Review failed reviews in the Reviews page
+- Check for common error patterns
+- Ensure proper branch protection rules
+
+### Unbalanced Workload
+
+If one author has 3x more PRs than others:
+
+- Consider redistributing work
+- Check if certain areas lack expertise
+- Use Team tab to identify knowledge gaps

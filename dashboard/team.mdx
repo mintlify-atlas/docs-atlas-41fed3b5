@@ -1,0 +1,352 @@
+---
+title: Team
+description: Developer profiles with AI-generated insights, strengths, and contribution patterns
+icon: users
+---
+
+The Team page provides detailed profiles for each contributor, showcasing their expertise, coding patterns, and contribution history.
+
+## Overview
+
+This page displays contributor profiles built from analyzing PR reviews and commit history. Each profile includes:
+
+- Contribution statistics
+- AI-generated profile summaries
+- Identified strengths
+- Common patterns and behaviors
+- Recent activity indicators
+
+<Info>
+  Team profiles are generated after at least 3 PR reviews from a contributor. The AI learns from code patterns, review feedback, and commit messages.
+</Info>
+
+## Page Header
+
+The header shows:
+
+- **Title**: "Team"
+- **Subtitle**: "Developer profiles and contribution insights"
+- **Repository Filter**: Dropdown to select which repo's contributors to display
+
+### Repository Selection
+
+The dropdown lists all connected repositories:
+
+```
+[Select Repository ▾]
+
+owner/repo-1
+owner/repo-2
+organization/repo-3
+```
+
+Defaults to the first connected repository if not manually selected.
+
+## Summary Statistics
+
+Four KPI cards at the top:
+
+<CardGroup cols={2}>
+  <Card title="Contributors" icon="users">
+    Total number of developers who have opened PRs
+  </Card>
+  <Card title="Total PRs" icon="code">
+    Sum of all PRs across all contributors
+  </Card>
+  <Card title="Avg PR Count" icon="trending-up">
+    Mean PRs per contributor (total PRs ÷ contributor count)
+  </Card>
+  <Card title="Active This Month" icon="star">
+    Contributors with at least one PR in the last 30 days
+  </Card>
+</CardGroup>
+
+## Contributor Cards
+
+Each developer is displayed in a card with:
+
+### Header Section
+
+- **Avatar Circle**: Colored circle with username's first letter (amber background)
+- **Username**: Bold `@username` label
+- **PR Badge**: Amber pill showing PR count (e.g., "28 PRs")
+- **Last PR**: Monospace badge with PR number (e.g., "Last PR #456")
+
+**Avatar colors**:
+
+- Background: `rgba(245, 192, 0, 0.1)` (amber/10)
+- Border: `rgba(245, 192, 0, 0.2)` (amber/20)
+- Text: `#F5C000` (amber)
+
+### Profile Summary
+
+AI-generated paragraph describing the developer's:
+
+- Primary areas of work
+- Coding style characteristics
+- Notable contributions
+- Technical focus areas
+
+**Example:**
+
+> "Experienced full-stack developer focused on backend API design and database optimization. Consistently delivers well-tested code with clear documentation. Strong expertise in TypeScript, PostgreSQL, and REST API patterns."
+
+<Note>
+  Profile summaries are generated using Claude 3.5 Sonnet by analyzing commit messages, PR descriptions, code changes, and review feedback.
+</Note>
+
+### Strengths Section
+
+Green badges highlighting positive attributes:
+
+- Icon: ⭐ Star (success green)
+- Label: "STRENGTHS" in uppercase monospace
+- Up to 3 strength badges displayed
+- Text truncated at 35 characters + ellipsis
+
+**Example strengths:**
+
+```
+✓ Excellent test coverage
+✓ Clean separation of concerns
+✓ Comprehensive error handling
+```
+
+**Badge styling:**
+
+- Background: `rgba(74, 219, 74, 0.1)` (success/10)
+- Border: `rgba(74, 219, 74, 0.2)` (success/20)
+- Text: `#4ADB4A` (success green)
+
+### Patterns Section
+
+Amber badges showing recurring behaviors or areas for improvement:
+
+- Icon: ⚠️ Alert triangle (amber)
+- Label: "PATTERNS" in uppercase monospace
+- Up to 2 pattern badges displayed
+- Text truncated at 35 characters + ellipsis
+
+**Example patterns:**
+
+```
+⚠ Tends to create large PRs (>500 LOC)
+⚠ Occasional async/await misuse
+```
+
+**Badge styling:**
+
+- Background: `rgba(245, 192, 0, 0.1)` (amber/10)
+- Border: `rgba(245, 192, 0, 0.2)` (amber/20)
+- Text: `#F5C000` (amber)
+
+<Warning>
+  Patterns are observational, not prescriptive. They help teams identify coaching opportunities and knowledge gaps.
+</Warning>
+
+## Card Layout
+
+Cards are displayed in a responsive grid:
+
+- **Desktop**: 2 columns
+- **Mobile**: 1 column
+- **Gap**: 16px between cards
+
+### Hover Effects
+
+- Border color changes from `border-surface-border` to `border-amber/20`
+- Avatar background brightens to `rgba(245, 192, 0, 0.2)`
+- Smooth transition (all properties)
+
+## Empty State
+
+If no contributor data exists:
+
+```
+👥 No contributor data yet
+
+Connect a repo and complete some PR reviews
+to build contributor profiles.
+```
+
+- Icon: Users icon (32px, gray)
+- Primary text: Bold, content-primary color
+- Secondary text: Smaller, content-secondary color
+- Centered layout with padding
+
+## Loading State
+
+While fetching contributors:
+
+- **6 skeleton cards** in a 2-column grid
+- Height: 192px per card (h-48 in Tailwind)
+- Background: `#1a1a1a` (surface-elevated)
+- Pulse animation
+
+## Data Source
+
+### API Endpoint
+
+```
+GET /api/analytics/contributors?repo={repo_full_name}
+```
+
+**Response format:**
+
+```typescript
+interface ContributorsResponse {
+  repo: string;
+  contributor_count: number;
+  contributors: Contributor[];
+}
+
+interface Contributor {
+  username: string;
+  profile_summary: string | null;
+  patterns: string[];
+  strengths: string[];
+  pr_count: number;
+  commit_count: number;
+  last_seen_pr: number | null;
+}
+```
+
+### Data Freshness
+
+Contributor data updates:
+
+- When a new PR review completes
+- After repository rescan
+- When manually refreshing analytics
+
+<Tip>
+  Run a repository rescan to rebuild contributor profiles with the latest data.
+</Tip>
+
+## How Profiles Are Generated
+
+Nectr builds contributor profiles through:
+
+### 1. Data Collection
+
+- PR titles and descriptions
+- Commit messages and diffs
+- Code review comments
+- Files touched and languages used
+- Review verdicts and confidence scores
+
+### 2. Pattern Analysis
+
+The AI identifies:
+
+- Common coding mistakes
+- Preferred architectural patterns
+- Testing habits
+- Documentation practices
+- Communication style
+
+### 3. Strength Detection
+
+Positive patterns that indicate:
+
+- Technical expertise
+- Best practice adherence
+- Code quality focus
+- Collaboration skills
+
+### 4. Summary Generation
+
+Claude 3.5 Sonnet synthesizes all data into:
+
+- Concise profile paragraph
+- Top 3-5 strengths
+- Top 2-3 recurring patterns
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Onboarding" icon="user-plus">
+    New team members can quickly understand each developer's expertise and working style.
+  </Card>
+  <Card title="Code Review Assignment" icon="git-pull-request">
+    Assign reviewers based on strengths (e.g., security expert for auth changes).
+  </Card>
+  <Card title="Knowledge Gaps" icon="brain">
+    Identify areas where the team lacks expertise and plan training.
+  </Card>
+  <Card title="1-on-1s" icon="message-circle">
+    Use patterns as discussion points for coaching and growth conversations.
+  </Card>
+</CardGroup>
+
+## Privacy & Ethics
+
+<Warning>
+  Contributor profiles are based on **code patterns**, not personal attributes. They should be used for technical coaching, not performance reviews.
+</Warning>
+
+### Best Practices
+
+- Share profiles transparently with your team
+- Use patterns for constructive feedback
+- Celebrate strengths publicly
+- Discuss patterns privately in 1-on-1s
+- Update profiles regularly (monthly rescans)
+
+### What NOT to Do
+
+- Don't use profiles for performance ratings
+- Don't compare developers competitively
+- Don't share patterns outside the team
+- Don't treat AI insights as absolute truth
+
+## Technical Details
+
+### Profile Generation Prompt
+
+Nectr uses a prompt template that includes:
+
+```
+Analyze this developer's contribution history:
+
+PRs: {pr_list}
+Commits: {commit_list}
+Reviews: {review_list}
+
+Generate:
+1. A 2-3 sentence profile summary
+2. Top 3-5 technical strengths
+3. Top 2-3 recurring patterns or areas for growth
+
+Focus on code quality, architectural decisions, and collaboration.
+```
+
+### Text Truncation
+
+To prevent UI overflow:
+
+- Strengths truncated at 35 chars per badge
+- Patterns truncated at 35 chars per badge
+- Profile summary limited to 3 lines with `line-clamp-3`
+
+### Responsive Design
+
+Breakpoints:
+
+- Mobile (< 640px): 1 column, full width
+- Tablet (640px - 1024px): 2 columns
+- Desktop (> 1024px): 2 columns with wider gutters
+
+## Future Enhancements
+
+Upcoming features:
+
+- **Search/Filter**: Find developers by strength or pattern
+- **Sortable Columns**: Order by PR count, activity, etc.
+- **Trend Charts**: Visualize contribution growth over time
+- **Expertise Tags**: Categorize developers by technology stack
+- **Team Composition**: Aggregate view of team strengths/gaps
+
+<Tip>
+  Request these features or suggest new ones on the Nectr GitHub repository.
+</Tip>

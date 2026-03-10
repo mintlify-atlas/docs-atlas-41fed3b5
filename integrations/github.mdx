@@ -1,0 +1,361 @@
+---
+title: "GitHub Integration"
+description: "Configure OAuth, webhooks, and PAT tokens to connect Nectr with GitHub for PR reviews and repository management"
+---
+
+## Overview
+
+GitHub is the **only required integration** for Nectr. The platform uses GitHub's REST API to:
+
+- Fetch PR diffs, files, and metadata
+- Retrieve issues, contributors, and repository stats
+- Post review comments and verdicts
+- Receive webhook events for new PRs
+
+**Implementation:** `app/integrations/github/` (client, OAuth, webhooks)
+
+---
+
+## Prerequisites
+
+1. **GitHub Account** (personal or organization)
+2. **GitHub OAuth App** for user authentication
+3. **GitHub Personal Access Token (PAT)** for posting reviews
+
+---
+
+## Setup Guide
+
+### 1. Create a GitHub OAuth App
+
+<Steps>
+  <Step title="Navigate to GitHub Settings">
+    Go to [github.com/settings/developers](https://github.com/settings/developers) → **OAuth Apps** → **New OAuth App**
+  </Step>
+  <Step title="Configure OAuth App">
+    - **Application name:** `Nectr` (or your custom name)
+    - **Homepage URL:** `https://your-backend.up.railway.app`
+    - **Authorization callback URL:** `https://your-backend.up.railway.app/auth/github/callback`
+  </Step>
+  <Step title="Copy Credentials">
+    After creating the app, copy the **Client ID** and generate a **Client Secret**.
+  </Step>
+</Steps>
+
+### 2. Generate a GitHub PAT
+
+Nectr uses a **Personal Access Token** to post review comments on behalf of a bot account.
+
+<Steps>
+  <Step title="Go to Token Settings">
+    [github.com/settings/tokens](https://github.com/settings/tokens) → **Generate new token (classic)**
+  </Step>
+  <Step title="Configure Token Scopes">
+    Required scope: **`repo`** (full control of private repositories)
+  </Step>
+  <Step title="Copy Token">
+    Save the token immediately — you won't be able to see it again.
+  </Step>
+</Steps>
+
+<Warning>
+**Security:** Use a dedicated bot account for the PAT (e.g., `@nectr-bot`) instead of your personal account. This limits exposure if the token is compromised.
+</Warning>
+
+### 3. Set Environment Variables
+
+Add the following to `.env`:
+
+```bash title=".env"
+# GitHub OAuth App
+GITHUB_CLIENT_ID=Iv1.abc123...
+GITHUB_CLIENT_SECRET=abc123def456...
+
+# GitHub Personal Access Token (for posting reviews)
+GITHUB_PAT=ghp_...
+
+# Webhook secret (optional — per-repo secrets are auto-generated)
+GITHUB_WEBHOOK_SECRET=fallback-secret-if-no-per-repo-secret
+```
+
+### 4. Connect a Repository
+
+Once Nectr is running:
+
+1. **Login via OAuth** → Nectr exchanges the OAuth code for an access token
+2. **Select a repository** → Nectr installs a webhook automatically
+3. **Webhook events** → `pull_request` and `issues` events trigger reviews
+
+---
+
+## How It Works
+
+### OAuth Flow
+
+**File:** `app/integrations/github/oauth.py`
+
+1. User clicks "Connect with GitHub"
+2. Nectr redirects to GitHub OAuth (`/auth/github`)
+3. GitHub redirects back with a `code` parameter
+4. Nectr exchanges the code for an access token:
+   ```python
+   async def exchange_code_for_token(code: str) -> str:
+       resp = await client.post(
+           "https://github.com/login/oauth/access_token",
+           json={
+               "client_id": settings.GITHUB_CLIENT_ID,
+               "client_secret": settings.GITHUB_CLIENT_SECRET,
+               "code": code,
+           },
+       )
+       data = resp.json()
+       return data["access_token"]
+   ```
+5. User's access token is stored in the database
+
+### Webhook Installation
+
+**File:** `app/integrations/github/webhook_manager.py`
+
+When a user connects a repository, Nectr installs a webhook automatically:
+
+```python
+async def install_webhook(
+    owner: str,
+    repo: str,
+    access_token: str,
+    backend_url: str,
+) -> tuple[int, str]:
+    webhook_secret = secrets.token_hex(32)
+    payload_url = f"{backend_url}/api/v1/webhooks/github"
+
+    resp = await client.post(
+        f"https://api.github.com/repos/{owner}/{repo}/hooks",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "name": "web",
+            "active": True,
+            "events": ["pull_request", "issues"],
+            "config": {
+                "url": payload_url,
+                "content_type": "json",
+                "secret": webhook_secret,
+                "insecure_ssl": "0",
+            },
+        },
+    )
+    webhook_id = resp.json()["id"]
+    return webhook_id, webhook_secret
+```
+
+**Events:**
+- `pull_request` → Triggers review when a PR is opened or updated
+- `issues` → (Future) Links issue context to reviews
+
+### GitHub REST API Client
+
+**File:** `app/integrations/github/client.py` (`GithubClient`)
+
+Nectr uses a custom async GitHub client built on `httpx`. Key methods:
+
+<Tabs>
+  <Tab title="Pull Requests">
+    ```python
+    # Fetch PR metadata
+    pr = await github_client.get_pull_request(owner, repo, pr_number)
+    # Returns: {id, title, body, state, head.sha, base.ref, ...}
+
+    # Fetch PR diff
+    diff = await github_client.get_pr_diff(owner, repo, pr_number)
+    # Returns: unified diff string
+
+    # Fetch PR files
+    files = await github_client.get_pr_files(owner, repo, pr_number)
+    # Returns: [{filename, status, additions, deletions, patch}, ...]
+    ```
+  </Tab>
+  <Tab title="Issues">
+    ```python
+    # Fetch repository issues (excludes PRs)
+    issues = await github_client.get_repo_issues(
+        owner, repo, state="open", per_page=50
+    )
+    # Returns: [{number, title, body, state, labels, user}, ...]
+
+    # Fetch a single issue
+    issue = await github_client.get_issue(owner, repo, issue_number)
+    # Returns: {number, title, body, state, labels, user} or None
+    ```
+  </Tab>
+  <Tab title="Repository Stats">
+    ```python
+    # Get repository languages
+    langs = await github_client.get_repo_languages(owner, repo)
+    # Returns: {"Python": 123456, "TypeScript": 78910, ...}
+
+    # Get contributors
+    contributors = await github_client.get_repo_contributors(owner, repo)
+    # Returns: [{login, contributions, avatar_url}, ...]
+
+    # Get detailed contributor stats (weekly commits, additions, deletions)
+    stats = await github_client.get_repo_stats_contributors(owner, repo)
+    # Returns: [{author: {login, ...}, total, weeks: [{w, a, d, c}]}, ...]
+    # Note: GitHub may return 202 while computing — retries up to 4 times
+    ```
+  </Tab>
+  <Tab title="Review Comments">
+    ```python
+    # Post a top-level PR comment
+    await github_client.post_pr_comment(
+        owner, repo, pr_number, comment="LGTM!"
+    )
+
+    # Post a full review (summary + inline comments)
+    await github_client.post_pr_review(
+        owner, repo, pr_number,
+        commit_id=pr["head"]["sha"],
+        body="## Review Summary\n...",
+        event="COMMENT",  # or "APPROVE" / "REQUEST_CHANGES"
+        comments=[
+            {"path": "app.py", "line": 42, "body": "Consider caching this"},
+        ],
+    )
+
+    # Post a single inline comment
+    await github_client.post_review_comment(
+        owner, repo, pr_number,
+        commit_id=pr["head"]["sha"],
+        path="app.py",
+        line=42,
+        body="This could be more efficient",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Token Resolution
+
+**File:** `app/integrations/github/client.py:16`
+
+Nectr resolves GitHub tokens in this order:
+
+1. **`GITHUB_PAT`** from `.env` (production)
+2. **`gh auth token`** from GitHub CLI (local development)
+3. **Error** if no token is available
+
+```python
+def get_github_token() -> str:
+    if settings.APP_ENV == "production":
+        if settings.GITHUB_PAT:
+            return settings.GITHUB_PAT.strip()
+        raise ValueError("GITHUB_PAT is required in production.")
+
+    # Try GitHub CLI first (local dev)
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback to PAT
+    if settings.GITHUB_PAT:
+        return settings.GITHUB_PAT.strip()
+
+    raise ValueError("No GitHub token available.")
+```
+
+---
+
+## Caching & Rate Limits
+
+### PR State Cache
+
+**File:** `app/integrations/github/client.py:76`
+
+Nectr caches PR states (open/closed/merged) to reduce GitHub API calls:
+
+- **TTL:** 60 seconds for open PRs, 300 seconds for merged/closed
+- **Max entries:** 500 (LRU eviction)
+- **Key format:** `owner/repo#pr_number`
+
+```python
+async def get_pr_state(owner: str, repo: str, pr_number: int) -> str:
+    cache_key = f"{owner}/{repo}#{pr_number}"
+    cached = self._pr_status_cache.get(cache_key)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]  # "open" | "closed" | "merged"
+
+    pr = await self.get_pull_request(owner, repo, pr_number)
+    status = "merged" if pr.get("merged") else pr.get("state", "open")
+    self._pr_status_cache[cache_key] = (status, time.monotonic() + ttl)
+    return status
+```
+
+### Rate Limits
+
+GitHub enforces rate limits:
+
+- **Authenticated:** 5,000 requests/hour
+- **Unauthenticated:** 60 requests/hour
+
+**Best practices:**
+- Use PAT for all requests (included in `headers`)
+- Cache frequently accessed data (PR state, contributor stats)
+- Use GraphQL API for complex queries (future enhancement)
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Error: No GitHub token available">
+    **Cause:** Neither `GITHUB_PAT` nor `gh auth token` is set.
+
+    **Fix:**
+    - Set `GITHUB_PAT` in `.env`
+    - Or run `gh auth login` (local dev only)
+  </Accordion>
+  <Accordion title="Webhook not receiving events">
+    **Cause:** Webhook URL is unreachable or secret mismatch.
+
+    **Fix:**
+    - Check `BACKEND_URL` in `.env` (must be publicly accessible)
+    - Verify webhook secret in database matches GitHub config
+    - Test webhook delivery in GitHub → Settings → Webhooks → Recent Deliveries
+  </Accordion>
+  <Accordion title="Rate limit exceeded">
+    **Cause:** Too many API requests in a short time.
+
+    **Fix:**
+    - Use a GitHub App instead of PAT (higher rate limits)
+    - Enable caching for frequently accessed data
+    - Reduce `per_page` in list queries
+  </Accordion>
+  <Accordion title="OAuth callback fails">
+    **Cause:** Callback URL mismatch or missing OAuth credentials.
+
+    **Fix:**
+    - Ensure `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set
+    - Verify callback URL in GitHub OAuth App matches `BACKEND_URL/auth/github/callback`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Protocol" icon="network-wired" href="/integrations/mcp-protocol">
+    Understand how Nectr connects with Linear, Sentry, and Slack
+  </Card>
+  <Card title="Linear Integration" icon="chart-line" href="/integrations/linear">
+    Pull linked issues into PR reviews
+  </Card>
+  <Card title="Environment Variables" icon="gear" href="/developers/environment-variables">
+    Full reference of all configuration options
+  </Card>
+</CardGroup>

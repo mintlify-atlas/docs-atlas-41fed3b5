@@ -1,0 +1,261 @@
+---
+title: Frontend Architecture
+description: Next.js 15, React 19, and TailwindCSS 4 setup for Nectr Web
+---
+
+## Tech Stack
+
+Nectr Web is built with modern frontend technologies:
+
+- **Next.js 15.5.12** — App Router, Server Components, Turbopack
+- **React 19.1.0** — Latest React with improved async handling
+- **TailwindCSS 4** — CSS-first configuration via `@import` directives
+- **TypeScript 5** — Type-safe development
+- **Node ≥20** — Required runtime version
+
+## Project Structure
+
+```
+nectr-web/
+├── src/
+│   ├── app/                    # Next.js App Router
+│   │   ├── (dashboard)/       # Route group for protected pages
+│   │   │   ├── layout.tsx     # Dashboard shell
+│   │   │   ├── dashboard/page.tsx
+│   │   │   ├── reviews/page.tsx
+│   │   │   ├── repos/page.tsx
+│   │   │   ├── team/page.tsx
+│   │   │   └── analytics/page.tsx
+│   │   ├── layout.tsx         # Root layout (fonts, metadata)
+│   │   ├── page.tsx           # Landing page
+│   │   └── globals.css        # Tailwind v4 config + brand theme
+│   ├── components/
+│   │   ├── ui/               # shadcn/ui components
+│   │   ├── dashboard/        # Domain components
+│   │   ├── Sidebar.tsx
+│   │   └── Providers.tsx      # React Query + Theme
+│   └── lib/                  # Utilities (axios, cn, etc.)
+├── next.config.ts            # API proxy, image domains
+├── package.json
+└── tailwind.config.ts        # (empty — v4 uses CSS-first)
+```
+
+## Configuration
+
+### Next.js Config
+
+**File:** `next.config.ts:1`
+
+```ts
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://devkit-production.up.railway.app';
+
+const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'avatars.githubusercontent.com' },
+      { protocol: 'https', hostname: 'github.com' },
+    ],
+  },
+  async rewrites() {
+    return [{ source: '/auth/:path*', destination: `${API_URL}/auth/:path*` }];
+  },
+};
+```
+
+- **Auth proxy**: `/auth/*` routes forward to backend for OAuth flow
+- **Image optimization**: Allows GitHub avatars and profile images
+
+### TailwindCSS 4 (CSS-first)
+
+**File:** `src/app/globals.css:1`
+
+Tailwind v4 uses `@import` directives instead of `tailwind.config.js`:
+
+```css
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* Map shadcn CSS vars to Tailwind utilities */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* ... */
+
+  /* Nectr brand colors */
+  --color-amber: #F5C000;
+  --color-surface: #111111;
+  --color-content-primary: #f5f5f5;
+
+  /* Fonts */
+  --font-sans: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+```
+
+**Brand utilities** (defined in `@layer components`):
+
+- `.text-amber` / `.bg-amber` — Primary brand color
+- `.bg-surface` / `.bg-surface-elevated` — Dark backgrounds
+- `.text-content-primary` / `.text-content-secondary` — Text hierarchy
+- `.shadow-amber-glow` — Signature glow effect
+- `.btn-nectr-primary` / `.btn-nectr-secondary` — Button styles
+- `.nectr-card` — Consistent card container
+
+### Root Layout
+
+**File:** `src/app/layout.tsx:1`
+
+```tsx
+import { DM_Sans, Geist_Mono } from 'next/font/google';
+
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '700', '900'],
+  variable: '--font-dm-sans',
+  display: 'swap',
+});
+
+const geistMono = Geist_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  variable: '--font-geist-mono',
+  display: 'swap',
+});
+```
+
+- **Fonts**: DM Sans (sans-serif), Geist Mono (monospace)
+- **SEO**: Comprehensive OpenGraph, Twitter Card, structured data
+- **Theme**: Dark mode by default (`#111111` background)
+
+## Data Fetching
+
+### React Query Setup
+
+**File:** `src/components/Providers.tsx`
+
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      retry: 1,
+    },
+  },
+});
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider attribute="class" defaultTheme="dark">
+        {children}
+      </ThemeProvider>
+    </QueryClientProvider>
+  );
+}
+```
+
+### API Client
+
+**Pattern**: `axios` with interceptors for auth headers
+
+```ts
+// src/lib/api.ts (typical setup)
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+});
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+```
+
+## UI Components
+
+### shadcn/ui
+
+All components in `src/components/ui/` use Radix UI primitives + TailwindCSS:
+
+- `button.tsx` — class-variance-authority variants
+- `card.tsx` / `dialog.tsx` / `dropdown-menu.tsx` — Radix composables
+- `badge.tsx` / `avatar.tsx` — Status indicators
+
+### Dashboard Components
+
+**File:** `src/components/dashboard/StatsCard.tsx`
+
+```tsx
+export function StatsCard({ title, value, icon, trend }: StatsCardProps) {
+  return (
+    <div className="nectr-card">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-content-secondary text-sm">{title}</p>
+          <p className="text-h2 font-bold text-amber">{value}</p>
+        </div>
+        {icon}
+      </div>
+      {trend && <TrendIndicator {...trend} />}
+    </div>
+  );
+}
+```
+
+## Routing
+
+### Protected Routes
+
+**File:** `src/components/ProtectedRoute.tsx`
+
+```tsx
+export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { data: user, isLoading } = useQuery(['user'], fetchUser);
+
+  if (isLoading) return <LoadingSpinner />;
+  if (!user) redirect('/login');
+
+  return <>{children}</>;
+}
+```
+
+### Route Groups
+
+`(dashboard)` folder groups protected pages without affecting URL structure:
+
+- `/dashboard` → `app/(dashboard)/dashboard/page.tsx`
+- `/reviews` → `app/(dashboard)/reviews/page.tsx`
+- Shared layout: `app/(dashboard)/layout.tsx`
+
+## Development
+
+```bash
+pnpm install
+pnpm dev --port 3001  # Uses Turbopack for fast HMR
+```
+
+### Build
+
+```bash
+pnpm build  # Static + dynamic pages via App Router
+pnpm start  # Production server
+```
+
+## Key Features
+
+1. **Server Components by default** — Client components only when needed (e.g. `useState`, event handlers)
+2. **Streaming SSR** — React 19 Suspense for progressive page loading
+3. **Type-safe API calls** — TypeScript + React Query typed responses
+4. **Dark mode first** — `next-themes` with system preference detection
+5. **Optimized images** — Next.js `<Image>` with GitHub avatar caching
+
+## Next Steps
+
+- [Review Flow](/developers/architecture/review-flow) — How PR reviews work end-to-end
+- [Webhook Setup](/developers/webhook-setup) — Backend integration details

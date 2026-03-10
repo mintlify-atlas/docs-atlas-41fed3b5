@@ -1,0 +1,271 @@
+---
+title: 'Repositories'
+description: 'Connect, disconnect, and manage GitHub repositories'
+---
+
+## List Repositories
+
+Fetch all GitHub repositories the authenticated user has access to, annotated with connection status.
+
+<CodeGroup>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/repos' \
+  --cookie 'access_token=<your_jwt>'
+```
+
+```javascript JavaScript
+fetch('http://localhost:8000/api/v1/repos', {
+  credentials: 'include'
+})
+  .then(res => res.json())
+  .then(repos => console.log(repos))
+```
+</CodeGroup>
+
+**Method**: `GET /api/v1/repos`
+
+**Authentication**: Required
+
+### Response
+
+Array of repository objects:
+
+<ResponseField name="id" type="integer" required>
+  GitHub repository ID
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  Repository name (e.g., `"nectr"`)
+</ResponseField>
+
+<ResponseField name="full_name" type="string" required>
+  Full repository name (e.g., `"octocat/nectr"`)
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Repository description
+</ResponseField>
+
+<ResponseField name="private" type="boolean" required>
+  Whether the repository is private
+</ResponseField>
+
+<ResponseField name="html_url" type="string" required>
+  GitHub repository URL
+</ResponseField>
+
+<ResponseField name="updated_at" type="string">
+  ISO 8601 timestamp of last update
+</ResponseField>
+
+<ResponseField name="is_connected" type="boolean" required>
+  Whether Nectr is connected to this repository
+</ResponseField>
+
+<ResponseField name="installation_id" type="integer">
+  Internal installation ID (null if not connected)
+</ResponseField>
+
+### Example Response
+
+```json
+[
+  {
+    "id": 123456789,
+    "name": "nectr",
+    "full_name": "octocat/nectr",
+    "description": "AI-powered code review assistant",
+    "private": false,
+    "html_url": "https://github.com/octocat/nectr",
+    "updated_at": "2025-03-10T12:30:00Z",
+    "is_connected": true,
+    "installation_id": 7
+  }
+]
+```
+
+### Error Responses
+
+- **401**: Token decryption failed (SECRET_KEY changed)
+- **502**: Failed to fetch repositories from GitHub
+
+---
+
+## Connect Repository
+
+Connect a repository to Nectr in one click (no GitHub redirect required).
+
+<CodeGroup>
+```bash cURL
+curl -X POST 'http://localhost:8000/api/v1/repos/octocat/nectr/install' \
+  --cookie 'access_token=<your_jwt>'
+```
+
+```javascript JavaScript
+fetch('http://localhost:8000/api/v1/repos/octocat/nectr/install', {
+  method: 'POST',
+  credentials: 'include'
+})
+  .then(res => res.json())
+  .then(data => console.log(data))
+```
+</CodeGroup>
+
+**Method**: `POST /api/v1/repos/{owner}/{repo}/install`
+
+**Authentication**: Required
+
+<ParamField path="owner" type="string" required>
+  Repository owner (user or organization)
+</ParamField>
+
+<ParamField path="repo" type="string" required>
+  Repository name
+</ParamField>
+
+### What This Does
+
+1. Creates a webhook on the GitHub repository pointing to `{BACKEND_URL}/api/v1/webhooks/github`
+2. Stores installation record with webhook ID and secret
+3. Kicks off background tasks:
+   - **Project scan**: Extracts architecture and conventions using AI
+   - **Graph build**: Indexes file tree into Neo4j
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"connected"`
+</ResponseField>
+
+<ResponseField name="installation_id" type="integer" required>
+  Internal installation ID
+</ResponseField>
+
+<ResponseField name="repo" type="string" required>
+  Full repository name (e.g., `"octocat/nectr"`)
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "connected",
+  "installation_id": 7,
+  "repo": "octocat/nectr"
+}
+```
+
+### Error Responses
+
+- **400**: Repo already connected
+- **401**: Session expired
+- **502**: Failed to install webhook (check GitHub permissions)
+
+---
+
+## Rescan Repository
+
+Re-index the repository file tree into Neo4j.
+
+<RequestExample>
+```bash cURL
+curl -X POST 'http://localhost:8000/api/v1/repos/octocat/nectr/rescan' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `POST /api/v1/repos/{owner}/{repo}/rescan`
+
+**Authentication**: Required
+
+<ParamField path="owner" type="string" required>
+  Repository owner
+</ParamField>
+
+<ParamField path="repo" type="string" required>
+  Repository name
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"scan_complete"`
+</ResponseField>
+
+<ResponseField name="repo" type="string" required>
+  Full repository name
+</ResponseField>
+
+<ResponseField name="files_indexed" type="integer" required>
+  Number of files indexed into Neo4j
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "scan_complete",
+  "repo": "octocat/nectr",
+  "files_indexed": 247
+}
+```
+
+### Error Responses
+
+- **404**: Repo not connected
+- **503**: Neo4j not configured
+- **500**: Rescan failed
+
+---
+
+## Disconnect Repository
+
+Disconnect a repository and remove its webhook.
+
+<RequestExample>
+```bash cURL
+curl -X DELETE 'http://localhost:8000/api/v1/repos/octocat/nectr/install' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `DELETE /api/v1/repos/{owner}/{repo}/install`
+
+**Authentication**: Required
+
+<ParamField path="owner" type="string" required>
+  Repository owner
+</ParamField>
+
+<ParamField path="repo" type="string" required>
+  Repository name
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"disconnected"`
+</ResponseField>
+
+<ResponseField name="repo" type="string" required>
+  Full repository name
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "disconnected",
+  "repo": "octocat/nectr"
+}
+```
+
+### Notes
+
+- Marks installation as inactive in database
+- Attempts to remove webhook from GitHub (warns if fails)
+- Does **not** delete Neo4j graph data or memory records
+
+### Error Responses
+
+- **404**: Installation not found

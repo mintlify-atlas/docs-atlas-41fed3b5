@@ -1,0 +1,109 @@
+---
+title: 'Authentication'
+description: 'Authenticate with the Nectr API using GitHub OAuth and JWT cookies'
+---
+
+## Overview
+
+Nectr uses **GitHub OAuth 2.0** for user authentication, followed by **JWT tokens** stored in HTTP-only cookies for session management.
+
+### Authentication Flow
+
+1. User initiates GitHub OAuth flow via `/auth/github`
+2. GitHub redirects to `/auth/github/callback` with authorization code
+3. Nectr exchanges code for GitHub access token
+4. Server creates JWT and sets it as an HTTP-only cookie
+5. Subsequent requests automatically include the cookie for authentication
+
+## Required Scopes
+
+Nectr requests the following GitHub OAuth scopes:
+
+- `repo`: Full access to repositories (required for webhook management and code review)
+- `read:user`: Read user profile data
+- `user:email`: Access user email address
+
+## Cookie-Based Authentication
+
+After successful login, the API sets an HTTP-only cookie named `access_token`:
+
+```http
+Set-Cookie: access_token=<jwt_token>; HttpOnly; Secure; SameSite=None; Max-Age=86400; Path=/
+```
+
+### Cookie Properties
+
+- **Name**: `access_token`
+- **HttpOnly**: Yes (prevents JavaScript access)
+- **Secure**: Yes (production only, HTTPS required)
+- **SameSite**: `None` (production) / `Lax` (development)
+- **Max-Age**: 1440 minutes (24 hours, configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`)
+
+## CORS Configuration
+
+The API allows credentials from these origins:
+
+```python
+http://localhost:5173  # Vite dev server
+http://localhost:3000  # React dev server
+http://localhost:3001  # Next.js dev server
+<FRONTEND_URL>         # Production frontend
+```
+
+All requests must include:
+
+```http
+Credentials: include
+```
+
+## Token Encryption
+
+GitHub access tokens are encrypted at rest using Fernet symmetric encryption (derived from `SECRET_KEY`). If `SECRET_KEY` changes, all stored tokens become invalid and users must re-authenticate.
+
+## Protected Endpoints
+
+Most API endpoints require authentication. Protected endpoints use the `get_current_user` dependency, which:
+
+1. Extracts JWT from the `access_token` cookie
+2. Validates the token signature and expiration
+3. Loads the user from the database
+4. Returns 401 if authentication fails
+
+## Example: Authenticated Request
+
+```bash
+curl -X GET 'http://localhost:8000/auth/me' \
+  --cookie 'access_token=<your_jwt_token>' \
+  -H 'Content-Type: application/json'
+```
+
+From JavaScript (with credentials):
+
+```javascript
+fetch('http://localhost:8000/auth/me', {
+  method: 'GET',
+  credentials: 'include',  // Include cookies
+  headers: {
+    'Content-Type': 'application/json'
+  }
+})
+```
+
+## Session Expiration
+
+When a token expires or becomes invalid, the API returns:
+
+```json
+{
+  "detail": "Session expired — please log out and sign in again to reconnect your GitHub account."
+}
+```
+
+The frontend should redirect to `/auth/github` to re-authenticate.
+
+## Security Considerations
+
+- **No CSRF tokens**: Using `SameSite=None` + `Secure` cookies provides CSRF protection
+- **Token rotation**: Tokens are refreshed on each GitHub re-authentication
+- **Webhook signatures**: All GitHub webhooks are verified using HMAC-SHA256
+- **State parameter**: OAuth flow uses cryptographically random state to prevent CSRF

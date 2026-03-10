@@ -1,0 +1,337 @@
+---
+title: PR Review Flow
+description: Complete end-to-end flow from GitHub webhook to AI-generated review comment
+---
+
+## Overview
+
+When a PR is opened or updated, Nectr:
+
+1. Receives GitHub webhook event
+2. Fetches PR diff + files from GitHub API
+3. Gathers context (issues, related PRs, memory)
+4. Runs agentic AI review (Claude fetches additional context on-demand)
+5. Posts review comment + inline suggestions
+6. Indexes PR in Neo4j + extracts Mem0 memories
+
+**Source:** `app/services/pr_review_service.py:464`
+
+## Service Entry Point
+
+### `PRReviewService.process_pr_review()`
+
+**File:** `app/services/pr_review_service.py:473`
+
+```python
+async def process_pr_review(self, payload: dict, event: Event, db: AsyncSession) -> dict:
+    pr = payload["pull_request"]
+    repo_full_name = payload.get("repository", {}).get("full_name", "")
+    pr_number = pr["number"]
+    head_sha = (pr.get("head") or {}).get("sha", "")
+```
+
+**Inputs:**
+- `payload` — GitHub webhook JSON
+- `event` — Database event record (tracking)
+- `db` — Async SQLAlchemy session
+
+**Returns:**
+```python
+{"status": "completed", "summary": "...", "files_analyzed": 12, "inline_suggestions": 3}
+```
+
+## Step 1: Fetch PR Data
+
+**File:** `app/services/pr_review_service.py:496`
+
+```python
+diff = await github_client.get_pr_diff(owner, repo, pr_number)
+files = await github_client.get_pr_files(owner, repo, pr_number)
+```
+
+- **`get_pr_diff`**: Returns unified diff string (truncated at 15 KB)
+- **`get_pr_files`**: Returns list of `{filename, additions, deletions, status, patch}`
+
+## Step 2: Gather Context (Parallel)
+
+**File:** `app/services/pr_review_service.py:512`
+
+```python
+issue_details, open_pr_conflicts, candidate_issues, related_prs = await asyncio.gather(
+    _fetch_issue_details(owner, repo, issue_refs),
+    _get_open_pr_conflicts(owner, repo, pr_number, file_paths),
+    _find_candidate_issues(owner, repo, pr_title, pr_body, file_paths, already_referenced=set(issue_refs)),
+    graph_builder.get_related_prs(repo_full_name, file_paths[:10], top_k=5),
+    return_exceptions=True,
+)
+```
+
+### Context Components
+
+#### Issue References
+
+**Function:** `_parse_issue_refs(pr_body, pr_title)` (`pr_review_service.py:34`)
+
+```python
+_ISSUE_REF_PATTERN = re.compile(r"(?:^|(?<=\s))(?:fixes|closes|resolves)\s+#(\d+)", re.IGNORECASE | re.MULTILINE)
+```
+
+Parses `Fixes #123` / `Closes #456` from PR body/title.
+
+#### Candidate Issues (Semantic Matching)
+
+**Function:** `_find_candidate_issues()` (`pr_review_service.py:71`)
+
+- Fetches 50 open issues from GitHub
+- Scores by keyword overlap with PR title/body/files
+- Returns top 8 candidates for AI to semantically verify
+
+#### Open PR Conflicts
+
+**Function:** `_get_open_pr_conflicts()` (`pr_review_service.py:130`)
+
+- Fetches up to 10 open PRs
+- Checks for file path overlap
+- Returns conflicting PRs sorted by overlap size
+
+#### Related Past PRs
+
+**Function:** `graph_builder.get_related_prs()` (Neo4j query)
+
+- Finds PRs that touched the same files
+- Returns top 5 with verdict (APPROVE/REQUEST_CHANGES)
+
+## Step 3: Agentic AI Review
+
+**File:** `app/services/ai_service.py:536`
+
+### Tool-Based Context Fetching
+
+Instead of sending all context upfront, Claude decides what it needs via tools:
+
+**Available Tools** (`ai_service.py:21`):
+
+```python
+REVIEW_TOOLS = [
+    {"name": "read_file", "description": "Read complete source at head commit"},
+    {"name": "search_project_memory", "description": "Search Mem0 for patterns/decisions"},
+    {"name": "search_developer_memory", "description": "Author-specific patterns"},
+    {"name": "get_file_history", "description": "File experts + past PRs"},
+    {"name": "get_issue_details", "description": "Fetch GitHub issue details"},
+    {"name": "search_open_issues", "description": "Keyword search in open issues"},
+    {"name": "get_linked_issues", "description": "Linear/GitHub issue search"},
+    {"name": "get_related_errors", "description": "Sentry errors for modified files"},
+]
+```
+
+### Tool Executor
+
+**Class:** `ReviewToolExecutor` (`pr_review_service.py:237`)
+
+```python
+class ReviewToolExecutor:
+    def __init__(self, owner, repo, repo_full_name, head_sha, author, candidate_issues):
+        self.owner = owner
+        self.repo = repo
+        self.head_sha = head_sha
+        self.candidate_issues = candidate_issues
+
+    async def execute(self, tool_name: str, tool_input: dict) -> str:
+        if tool_name == "read_file":
+            return await self._read_file(tool_input["path"])
+        if tool_name == "search_project_memory":
+            return await self._search_project_memory(tool_input["query"])
+        # ... 8 tools total
+```
+
+**Example:** Claude calls `read_file("app/auth/login.py")` → executor fetches from GitHub → returns file content.
+
+### Agentic Loop
+
+**File:** `app/services/ai_service.py:646`
+
+```python
+for round_num in range(max_rounds):  # max_rounds = 8
+    response = await self.client.messages.create(
+        model=self.model,
+        max_tokens=4000,
+        tools=REVIEW_TOOLS,
+        messages=messages,
+    )
+
+    if response.stop_reason == "end_turn":
+        raw_text = "".join(b.text for b in response.content if hasattr(b, "text"))
+        break
+
+    if response.stop_reason == "tool_use":
+        # Execute tool calls → append results → continue loop
+        for block in response.content:
+            if block.type == "tool_use":
+                result = await tool_executor.execute(block.name, block.input)
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+        messages.append({"role": "user", "content": tool_results})
+        continue
+```
+
+**Flow:**
+1. Claude receives diff + file list
+2. Claude calls tools (e.g., `read_file`, `search_project_memory`)
+3. Tool results appended to conversation
+4. Claude continues until it has enough context
+5. Claude outputs structured review
+
+### Output Parsing
+
+**File:** `app/services/ai_service.py:491`
+
+```python
+# Claude outputs:
+# 1. Prose review (markdown)
+# 2. <suggestions>[{file, line_hint, comment, suggestion}]</suggestions>
+# 3. <semantic_issues>[{number, confidence, reason}]</semantic_issues>
+
+suggestions_match = _SUGGESTIONS_RE.search(raw_text)
+if suggestions_match:
+    inline_comments = json.loads(suggestions_match.group(1))[:5]
+
+semantic_match = _SEMANTIC_ISSUES_RE.search(raw_text)
+if semantic_match:
+    semantic_issue_matches = json.loads(semantic_match.group(1))[:5]
+```
+
+## Step 4: Build Line Map
+
+**File:** `app/services/pr_review_service.py:194`
+
+AI outputs `line_hint` (exact line content) → must resolve to absolute line number:
+
+```python
+def _build_line_map(files: list[dict]) -> dict[str, dict[str, int]]:
+    """Parse diff patches to map line content → right-side line number"""
+    line_map = {}
+    for f in files:
+        patch = f.get("patch", "")
+        mapping = {}
+        for patch_line in patch.splitlines():
+            if patch_line.startswith("@@"):
+                current_right_line = int(_HUNK_HEADER_RE.search(patch_line).group(1)) - 1
+            elif patch_line.startswith("+"):
+                current_right_line += 1
+                content = patch_line[1:]  # strip '+'
+                mapping[content.strip()] = current_right_line
+        line_map[filename] = mapping
+    return line_map
+```
+
+**Resolution** (`pr_review_service.py:180`):
+
+```python
+def _resolve_line(hint: str, lines: dict[str, int]) -> int | None:
+    return lines.get(hint) or lines.get(hint.strip()) or lines.get(_normalize_ws(hint.strip()))
+```
+
+Tries exact match → stripped → whitespace-normalized.
+
+## Step 5: Post Review
+
+**File:** `app/services/pr_review_service.py:716`
+
+```python
+# Map AI verdict to GitHub review event
+_event_map = {
+    "APPROVE": "APPROVE",
+    "REQUEST_CHANGES": "REQUEST_CHANGES",
+    "NEEDS_DISCUSSION": "COMMENT",
+}
+github_event = _event_map.get(review_result.verdict, "COMMENT")
+
+await github_client.post_pr_review(
+    owner, repo, pr_number,
+    commit_id=head_sha,
+    body=comment_body,
+    event=github_event,
+    comments=inline_comments,  # [{path, line, side, body}]
+)
+```
+
+**Fallback:** If `post_pr_review` fails (e.g., no commit ID), falls back to `post_pr_comment` (flat comment without inline suggestions).
+
+## Step 6: Index in Neo4j
+
+**File:** `app/services/pr_review_service.py:770`
+
+```python
+await graph_builder.index_pr(
+    repo_full_name=repo_full_name,
+    pr_number=pr_number,
+    title=pr_title,
+    author=author,
+    files_changed=file_paths,
+    verdict=review_result.verdict,
+    issue_numbers=all_issue_numbers,
+)
+```
+
+Creates nodes: `Repository`, `PullRequest`, `Developer`, `File`, `Issue` — with relationships `AUTHORED`, `TOUCHES`, `RESOLVES`.
+
+## Step 7: Extract Memories
+
+**File:** `app/services/pr_review_service.py:781`
+
+```python
+await extract_and_store(
+    repo_full_name=repo_full_name,
+    pr_number=pr_number,
+    author=author,
+    title=pr_title,
+    files=files,
+    review_summary=summary,
+)
+```
+
+Uses Mem0 to extract:
+- **Project patterns** (e.g., "Always validate user input in auth endpoints")
+- **Developer patterns** (e.g., "@alice tends to forget error handling in async functions")
+- **Decisions** (e.g., "Use Pydantic for all API request models")
+
+## Error Handling
+
+**File:** `app/services/pr_review_service.py:797`
+
+```python
+except Exception as e:
+    logger.error(f"PR review failed for {repo_full_name}#{pr_number}: {e}", exc_info=True)
+    workflow.status = "failed"
+    workflow.error = str(e)
+    event.status = "failed"
+    return {"status": "failed", "error": str(e)}
+```
+
+- Sets `WorkflowRun.status = "failed"`
+- Logs full traceback
+- Returns error dict (webhook handler marks event as failed)
+
+## Skip Rules
+
+**File:** `app/services/pr_review_service.py:20`
+
+```python
+_SKIP_FILE_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Cargo.lock"}
+_SKIP_FILE_EXTS = {".min.js", ".min.css", ".map", ".snap", ".lock", ".pb", ".pyc"}
+```
+
+These files are excluded from AI analysis (too noisy, no signal).
+
+## Performance Notes
+
+- **Parallel context fetching**: 4 I/O-bound tasks run concurrently (`asyncio.gather`)
+- **Lazy file reading**: Claude only reads files it explicitly requests
+- **Diff truncation**: Diffs >15 KB are truncated to stay within token limits
+- **Tool cap**: Max 8 agentic rounds to prevent infinite loops
+- **Inline suggestions**: Hard capped at 5 to avoid overwhelming PRs
+
+## Next Steps
+
+- [Parallel Agents](/developers/parallel-agents) — 3-agent concurrent review mode
+- [Neo4j Schema](/developers/neo4j-schema) — Graph database constraints
+- [Webhook Setup](/developers/webhook-setup) — How webhooks are installed

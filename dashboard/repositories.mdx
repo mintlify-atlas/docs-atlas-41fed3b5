@@ -1,0 +1,239 @@
+---
+title: Repositories
+description: Connect and manage GitHub repositories for AI-powered PR reviews
+icon: git-branch
+---
+
+The Repositories page lets you connect GitHub repositories to Nectr, enabling automatic AI-powered code reviews for all pull requests.
+
+## Overview
+
+The page displays all repositories you have access to through your GitHub installation, separated into two sections:
+
+- **Connected**: Repositories actively receiving AI reviews
+- **Available**: Repositories you can connect
+
+<Info>
+  Nectr automatically fetches your repositories when you install the GitHub App. The list updates when you authorize additional repos.
+</Info>
+
+## Repository Cards
+
+Each repository is displayed as a card with:
+
+### Basic Information
+
+- **Repository Icon**: Branch icon (amber for connected, gray for available)
+- **Full Name**: `owner/repo-name` in monospace font
+- **Visibility Badge**: Lock icon (private) or globe icon (public)
+- **Description**: Repository description from GitHub
+- **Last Updated**: Date of last activity (e.g., "Updated Mar 8")
+
+### Connection Status
+
+Connected repositories show:
+
+- **Green "Connected" badge** with checkmark icon
+- **Rescan button**: Rebuilds the Neo4j knowledge graph
+- **Disconnect button**: Red secondary button to remove connection
+
+Available repositories show:
+
+- **Connect button**: Primary amber button to activate AI reviews
+
+## Connecting a Repository
+
+<Steps>
+  <Step title="Click Connect">
+    Click the **Connect** button on any available repository card.
+  </Step>
+  <Step title="Webhook Installation">
+    Nectr installs a GitHub webhook to listen for pull request events.
+  </Step>
+  <Step title="Initial Scan">
+    The repository is automatically scanned and indexed into the Neo4j knowledge graph.
+  </Step>
+  <Step title="Ready for Reviews">
+    All future PRs will receive automatic AI reviews.
+  </Step>
+</Steps>
+
+### What Happens When You Connect?
+
+1. **Webhook Setup**: Nectr registers a webhook for PR events (`opened`, `synchronize`, `reopened`)
+2. **Knowledge Graph Build**: The codebase is indexed into Neo4j for contextual understanding
+3. **File Analysis**: Source code files are analyzed for structure and dependencies
+4. **Ready State**: The repository is marked as connected and ready to review PRs
+
+<Tip>
+  The initial scan typically completes within 1-2 minutes for repositories under 10k files.
+</Tip>
+
+## Rescan Function
+
+Connected repositories include a **Rescan** button that:
+
+- Rebuilds the Neo4j knowledge graph with latest codebase changes
+- Re-indexes all files and dependencies
+- Updates contributor statistics
+- Shows a toast notification with file count: *"Graph built — 1,234 files indexed into Neo4j"*
+
+### When to Rescan
+
+<AccordionGroup>
+  <Accordion title="After major refactors">
+    If you've restructured your codebase, rescan to update the knowledge graph with new file paths and dependencies.
+  </Accordion>
+  <Accordion title="New team members">
+    Rescan after new contributors join to include their profiles in team analytics.
+  </Accordion>
+  <Accordion title="Stale data">
+    If analytics seem outdated, a rescan ensures fresh data from GitHub's API.
+  </Accordion>
+</AccordionGroup>
+
+## Disconnecting a Repository
+
+<Warning>
+  Disconnecting a repository stops all automatic PR reviews. Existing review data is preserved but no new reviews will be created.
+</Warning>
+
+<Steps>
+  <Step title="Click Disconnect">
+    Click the red **Disconnect** button on a connected repository.
+  </Step>
+  <Step title="Confirm Action">
+    The action executes immediately (no confirmation dialog).
+  </Step>
+  <Step title="Webhook Removed">
+    Nectr removes the GitHub webhook for PR events.
+  </Step>
+  <Step title="Data Retained">
+    Historical review data remains accessible in the dashboard.
+  </Step>
+</Steps>
+
+## Info Banner
+
+The page includes an informational banner explaining how Nectr works:
+
+<Note>
+  **How it works**
+  
+  Connect a repo to install a GitHub webhook. Nectr will automatically review every PR opened on that repo, post AI feedback, and build a knowledge graph of your codebase.
+</Note>
+
+## Page Header
+
+The header shows:
+
+- **Title**: "Code Providers"
+- **Stats**: `X connected · Y total repositories`
+- **Refresh Button**: Manually refetch repositories from GitHub
+
+## Loading States
+
+While fetching repositories, the page displays:
+
+- **6 skeleton cards** with animated loading effect
+- Background color: `#1a1a1a`
+- Height: `80px` per skeleton
+
+## Error Handling
+
+If the API request fails, an error card displays:
+
+- **Red border** and background (`danger/5`)
+- **Error message** from API response
+- **Retry button** to refetch repositories
+
+Common errors:
+
+```
+Failed to load repositories
+Unauthorized — check Railway logs
+GitHub App not installed
+```
+
+## Empty States
+
+### All Repos Connected
+
+If all available repositories are already connected:
+
+```
+✓ All your repos are connected.
+```
+
+Shown with a green checkmark icon in the Available section.
+
+### No Repositories
+
+If you haven't authorized any repositories:
+
+1. Go to your GitHub App installation settings
+2. Grant repository access to Nectr
+3. Return to this page and click **Refresh**
+
+## Visual Design
+
+### Connected Cards
+
+- **Border**: Amber glow (`border-amber/20 shadow-amber-glow`)
+- **Hover**: Brighter amber border (`border-amber/30`)
+- **Icon Background**: Amber tint (`bg-amber/10`)
+
+### Available Cards
+
+- **Border**: Standard border (`border-surface-border`)
+- **Hover**: Subtle amber tint (`hover:border-amber/30`)
+- **Icon Background**: Gray (`bg-surface-subtle`)
+
+## Keyboard & Accessibility
+
+- All buttons are keyboard accessible
+- Loading states show spinner icons
+- Disabled buttons have reduced opacity
+- Toast notifications for all actions
+
+## Technical Details
+
+### API Endpoints
+
+- `GET /api/repos` - Fetch all repositories
+- `POST /api/repos/{owner}/{repo}/install` - Connect repository
+- `DELETE /api/repos/{owner}/{repo}/uninstall` - Disconnect repository
+- `POST /api/repos/{owner}/{repo}/rescan` - Rebuild knowledge graph
+
+### Data Model
+
+```typescript
+interface Repo {
+  id: number;
+  name: string;
+  full_name: string;
+  description: string | null;
+  private: boolean;
+  html_url: string;
+  updated_at: string;
+  is_connected: boolean;
+  installation_id?: number;
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Start Small" icon="seedling">
+    Connect one repository first to test Nectr's reviews before scaling to your entire org.
+  </Card>
+  <Card title="Rescan Regularly" icon="rotate">
+    Run a rescan monthly or after major codebase changes to keep analytics accurate.
+  </Card>
+  <Card title="Monitor Webhooks" icon="webhook">
+    Check GitHub's webhook delivery logs if reviews aren't triggering.
+  </Card>
+  <Card title="Review Permissions" icon="shield">
+    Ensure Nectr has read access to repository contents and write access for PR comments.
+  </Card>
+</CardGroup>

@@ -1,0 +1,777 @@
+---
+title: 'PR Reviews'
+description: 'Automated AI code review with inline suggestions and context-aware analysis'
+---
+
+## Overview
+
+Nectr automatically reviews every pull request on connected repositories, providing:
+
+- **Structured feedback** covering bugs, security, performance, and style
+- **Clear verdicts**: APPROVE, REQUEST_CHANGES, or NEEDS_DISCUSSION
+- **Inline suggestions** with GitHub's ````suggestion` blocks
+- **Contextual intelligence** from Neo4j graph + Mem0 memory + MCP integrations
+
+<img src="/images/pr-review-example.png" alt="Nectr PR Review" />
+
+## Review Workflow
+
+The complete PR review process takes 15-45 seconds from webhook receipt to posted comment.
+
+### 1. Webhook Trigger
+
+Nectr installs a per-repo webhook that fires on:
+- `pull_request.opened`
+- `pull_request.synchronize` (new commits pushed)
+- `pull_request.reopened`
+
+```python
+# app/api/v1/webhooks.py:25-35
+@router.post("/github")
+async def github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Verify HMAC-SHA256 signature
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    body = await request.body()
+    expected_sig = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+    
+    if not hmac.compare_digest(f"sha256={expected_sig}", signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    
+    # 2. Deduplicate (ignore duplicate events within 1 hour)
+    # ... see /how-it-works for full implementation
+    
+    # 3. Create Event record + spawn background task
+    background_tasks.add_task(pr_review_service.process_pr_review, payload, event, db)
+    return {"status": "accepted"}
+```
+
+<Info>
+  Nectr returns HTTP 200 immediately to prevent GitHub webhook timeouts (10s limit). The actual review happens asynchronously.
+</Info>
+
+### 2. PR Data Extraction
+
+```python
+# app/services/pr_review_service.py:496-499
+diff = await github_client.get_pr_diff(owner, repo, pr_number)
+files = await github_client.get_pr_files(owner, repo, pr_number)
+```
+
+**Files array structure**:
+```json
+[
+  {
+    "filename": "src/services/auth.py",
+    "status": "modified",
+    "additions": 23,
+    "deletions": 8,
+    "patch": "@@ -15,7 +15,8 @@\n def verify_token(token: str):\n-    return jwt.decode(token, SECRET)\n+    try:\n+        return jwt.decode(token, SECRET, algorithms=['HS256'])\n+    except jwt.DecodeError:\n+        raise HTTPException(status_code=401)"
+  }
+]
+```
+
+**Filtered files** (skipped in analysis):
+- Lock files: `package-lock.json`, `yarn.lock`, `poetry.lock`, `Cargo.lock`
+- Minified assets: `*.min.js`, `*.min.css`, `*.map`
+- Generated snapshots: `*.snap`
+
+```python
+# app/services/pr_review_service.py:20-24
+_SKIP_FILE_NAMES = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "poetry.lock", "composer.lock", "Cargo.lock",
+}
+_SKIP_FILE_EXTS = {".min.js", ".min.css", ".map", ".snap", ".lock", ".pb", ".pyc"}
+```
+
+### 3. Context Assembly
+
+Nectr builds a comprehensive ReviewContext from multiple sources:
+
+<Tabs>
+  <Tab title="Issue References">
+    Parses PR body + title for issue references:
+    
+    ```python
+    # app/services/pr_review_service.py:28-41
+    _ISSUE_REF_PATTERN = re.compile(
+        r"(?:^|(?<=\s))(?:fixes|closes|resolves)\s+#(\d+)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    
+    def _parse_issue_refs(pr_body: str, pr_title: str) -> list[int]:
+        text = f"{pr_title or ''} {pr_body or ''}"
+        matches = _ISSUE_REF_PATTERN.findall(text)
+        return list(dict.fromkeys(int(m) for m in matches))
+    ```
+    
+    **Example**:
+    ```markdown
+    # PR body
+    Fixes #123
+    Closes #456
+    This PR resolves #789
+    
+    # Parsed: [123, 456, 789]
+    ```
+    
+    Then fetches full issue details from GitHub:
+    ```python
+    issue_details = await asyncio.gather(
+        *[github_client.get_issue(owner, repo, n) for n in issue_refs]
+    )
+    ```
+  </Tab>
+
+  <Tab title="Semantic Issue Candidates">
+    Finds open issues that might be resolved without explicit mention:
+    
+    ```python
+    # app/services/pr_review_service.py:71-127
+    async def _find_candidate_issues(
+        owner: str,
+        repo: str,
+        pr_title: str,
+        pr_body: str,
+        file_paths: list[str],
+        already_referenced: set[int],
+        max_candidates: int = 8,
+    ) -> list[dict]:
+        # 1. Fetch up to 50 open issues
+        issues = await github_client.get_repo_issues(owner, repo, state="open", per_page=50)
+        issues = [i for i in issues if i["number"] not in already_referenced]
+        
+        # 2. Build keyword set from PR title + body + file paths
+        pr_text = f"{pr_title} {pr_body}".lower()
+        file_keywords = set()
+        for path in file_paths:
+            parts = re.split(r"[/_.-]", path.lower())
+            file_keywords.update(p for p in parts if len(p) > 2)
+        pr_words = set(re.findall(r"\b\w{3,}\b", pr_text)) | file_keywords
+        
+        # 3. Score each issue by keyword overlap
+        scored = []
+        for issue in issues:
+            issue_text = f"{issue.get('title', '')} {issue.get('body') or ''}".lower()
+            issue_words = set(re.findall(r"\b\w{3,}\b", issue_text))
+            overlap = len(pr_words & issue_words)
+            if overlap >= 2:  # Require at least 2 shared words
+                scored.append((overlap, issue))
+        
+        # 4. Return top N by overlap score
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [{"number": i["number"], "title": i.get("title"), "body": i.get("body")[:200], "score": s} 
+                for s, i in scored[:max_candidates]]
+    ```
+    
+    **Claude decides** whether these candidates are actually resolved by the PR.
+  </Tab>
+
+  <Tab title="Open PR Conflicts">
+    Checks for concurrent PRs touching the same files:
+    
+    ```python
+    # app/services/pr_review_service.py:130-172
+    async def _get_open_pr_conflicts(
+        owner: str,
+        repo: str,
+        current_pr_number: int,
+        current_file_paths: list[str],
+    ) -> list[dict]:
+        # 1. Fetch up to 20 open PRs (excluding current)
+        open_prs = await github_client.get_repo_pull_requests(owner, repo, state="open", per_page=20)
+        open_prs = [p for p in open_prs if p["number"] != current_pr_number][:10]
+        
+        # 2. Fetch changed files for each PR (parallel)
+        pr_files_results = await asyncio.gather(
+            *[github_client.get_pr_files_list(owner, repo, p["number"]) for p in open_prs],
+            return_exceptions=True,
+        )
+        
+        # 3. Find overlapping files
+        current_files_set = set(current_file_paths)
+        conflicting = []
+        for pr, pr_files in zip(open_prs, pr_files_results):
+            if isinstance(pr_files, Exception):
+                continue
+            overlap = sorted(current_files_set & set(pr_files))
+            if overlap:
+                conflicting.append({
+                    "number": pr["number"],
+                    "title": pr.get("title", ""),
+                    "author": (pr.get("user") or {}).get("login", ""),
+                    "url": pr.get("html_url"),
+                    "overlap": overlap[:5],  # Cap at 5 files for display
+                })
+        
+        return sorted(conflicting, key=lambda x: len(x["overlap"]), reverse=True)[:5]
+    ```
+    
+    **Example output**:
+    ```json
+    [
+      {
+        "number": 87,
+        "title": "Refactor auth middleware",
+        "author": "bob",
+        "url": "https://github.com/org/repo/pull/87",
+        "overlap": ["src/auth/middleware.py", "src/auth/jwt.py"]
+      }
+    ]
+    ```
+  </Tab>
+
+  <Tab title="Neo4j + Mem0">
+    Structural + semantic context assembled in parallel:
+    
+    ```python
+    # app/services/context_service.py:58-92
+    async def build_review_context(
+        repo_full_name: str,
+        pr_title: str,
+        pr_description: str,
+        file_paths: list[str],
+        author: str,
+        pr_number: int | None = None,
+        open_prs: list[dict] | None = None,
+    ) -> ReviewContext:
+        # Mem0: project-wide + developer-specific memories
+        query = f"{pr_title} {pr_description[:300]} {', '.join(file_paths[:10])}"
+        project_memories, developer_memories = await asyncio.gather(
+            memory_adapter.search_relevant(repo=repo_full_name, query=query, developer=None, top_k=12),
+            memory_adapter.search_relevant(
+                repo=repo_full_name,
+                query="Developer patterns, strengths, recurring issues",
+                developer=author,
+                top_k=5
+            ) if author else _noop(),
+        )
+        
+        # Neo4j: file experts + related past PRs
+        file_experts, related_prs = await asyncio.gather(
+            graph_builder.get_file_experts(repo_full_name, file_paths[:20], top_k=5),
+            graph_builder.get_related_prs(repo_full_name, file_paths[:20], exclude_pr=pr_number, top_k=5),
+        )
+        
+        # Serialize for prompt injection
+        return ReviewContext(
+            project_memories=project_memories,
+            developer_memories=developer_memories,
+            file_experts=file_experts,
+            related_prs=related_prs,
+            open_prs=open_prs or [],
+            serialized="..."  # Formatted text block for Claude
+        )
+    ```
+  </Tab>
+</Tabs>
+
+### 4. AI Analysis (Agentic Loop)
+
+Claude Sonnet 4.6 reviews the PR with access to 8 on-demand tools:
+
+```python
+# app/services/pr_review_service.py:566-569
+review_result = await ai_service.analyze_pull_request_agentic(
+    pr, diff, files, tool_executor, issue_refs=issue_refs
+)
+```
+
+**Tool executor** (app/services/pr_review_service.py:237-288):
+
+```python
+class ReviewToolExecutor:
+    def __init__(self, owner, repo, repo_full_name, head_sha, author, candidate_issues):
+        self.owner = owner
+        self.repo = repo
+        self.repo_full_name = repo_full_name
+        self.head_sha = head_sha
+        self.author = author
+        self.candidate_issues = candidate_issues
+    
+    async def execute(self, tool_name: str, tool_input: dict) -> str:
+        if tool_name == "read_file":
+            return await self._read_file(tool_input["path"])
+        if tool_name == "search_project_memory":
+            return await self._search_project_memory(tool_input["query"])
+        if tool_name == "search_developer_memory":
+            return await self._search_developer_memory(tool_input["developer"], tool_input["query"])
+        # ... 5 more tools
+```
+
+**AI output structure**:
+
+```python
+@dataclass
+class ReviewResult:
+    summary: str                          # Markdown-formatted review text
+    verdict: str                          # "APPROVE" | "REQUEST_CHANGES" | "NEEDS_DISCUSSION"
+    inline_comments: list[dict]           # Line-specific suggestions
+    semantic_issue_matches: list[dict]    # Issues resolved without explicit mention
+```
+
+**Example inline comment**:
+
+```python
+{
+    "file": "src/auth/middleware.py",
+    "line_hint": "return jwt.decode(token, SECRET)",  # Fuzzy line matching
+    "end_line_hint": None,  # Optional: for multi-line suggestions
+    "suggestion": "try:\n    return jwt.decode(token, SECRET, algorithms=['HS256'])\nexcept jwt.DecodeError:\n    raise HTTPException(status_code=401)",
+    "comment": "Add explicit algorithm specification and error handling for JWT decode failures."
+}
+```
+
+### 5. Line Number Resolution
+
+Claude returns `line_hint` (code snippet) instead of absolute line numbers. Nectr resolves these to GitHub line numbers:
+
+```python
+# app/services/pr_review_service.py:194-234
+def _build_line_map(files: list[dict]) -> dict[str, dict[str, int]]:
+    """
+    Parse the `patch` field of each file and build:
+        {filename: {stripped_line_content: right_side_line_number}}
+    
+    Indexes every `+` line (additions) so AI-generated `line_hint` strings
+    can be resolved to absolute line numbers.
+    """
+    line_map = {}
+    for f in files:
+        patch = f.get("patch", "")
+        filename = f.get("filename", "")
+        if not patch or not filename:
+            continue
+        
+        mapping = {}
+        current_right_line = 0
+        for patch_line in patch.splitlines():
+            if patch_line.startswith("@@"):
+                # Parse hunk header: @@ -10,6 +10,7 @@
+                m = re.search(r"\+(\d+)", patch_line)
+                if m:
+                    current_right_line = int(m.group(1)) - 1
+            elif patch_line.startswith("+"):
+                current_right_line += 1
+                content = patch_line[1:]  # Strip leading '+'
+                stripped = content.strip()
+                if stripped:
+                    # Store 3 variants for fuzzy matching:
+                    mapping[content] = current_right_line           # Exact with indentation
+                    mapping[stripped] = current_right_line          # Stripped
+                    mapping[" ".join(stripped.split())] = current_right_line  # Whitespace-normalized
+            elif not patch_line.startswith("-"):
+                current_right_line += 1
+        
+        line_map[filename] = mapping
+    return line_map
+
+# Resolve line_hint -> absolute line number
+def _resolve_line(hint: str, lines: dict[str, int]) -> int | None:
+    return (
+        lines.get(hint)
+        or lines.get(hint.strip())
+        or lines.get(" ".join(hint.split()))  # Whitespace-normalized
+    )
+```
+
+<Tip>
+  Fuzzy matching handles minor whitespace differences between the AI's hint and the actual patch content.
+</Tip>
+
+### 6. Post Review to GitHub
+
+```python
+# app/integrations/github/client.py:120-145
+async def post_pr_review(
+    self,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    commit_id: str,
+    body: str,
+    event: str = "COMMENT",
+    comments: list[dict] | None = None,
+):
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    
+    payload = {
+        "commit_id": commit_id,
+        "body": body,
+        "event": event,  # "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
+    }
+    
+    if comments:
+        payload["comments"] = comments
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        r.raise_for_status()
+    
+    return r.json()
+```
+
+**GitHub review event mapping**:
+
+```python
+# app/services/pr_review_service.py:704-709
+_event_map = {
+    "APPROVE": "APPROVE",
+    "REQUEST_CHANGES": "REQUEST_CHANGES",
+    "NEEDS_DISCUSSION": "COMMENT",  # No explicit "NEEDS_DISCUSSION" in GitHub API
+}
+github_event = _event_map.get(review_result.verdict, "COMMENT")
+```
+
+**Fallback to issue comment** (if review API fails):
+
+```python
+# app/services/pr_review_service.py:725-741
+try:
+    await github_client.post_pr_review(...)
+except Exception as review_err:
+    logger.warning(f"post_pr_review failed ({review_err}), falling back to flat comment")
+    try:
+        await github_client.post_pr_comment(owner, repo, pr_number, comment_body)
+    except Exception as comment_err:
+        logger.error(f"Fallback post_pr_comment also failed: {comment_err}")
+        raise comment_err
+```
+
+### 7. Post-Review Indexing
+
+After posting the review, Nectr updates its knowledge stores:
+
+<Tabs>
+  <Tab title="Neo4j Graph">
+    ```python
+    # app/services/pr_review_service.py:770-778
+    await graph_builder.index_pr(
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        title=pr_title,
+        author=author,
+        files_changed=file_paths,
+        verdict=review_result.verdict,
+        issue_numbers=all_issue_numbers,
+    )
+    ```
+    
+    See [Knowledge Graph](/features/knowledge-graph) for details.
+  </Tab>
+
+  <Tab title="Mem0 Memories">
+    ```python
+    # app/services/pr_review_service.py:781-788
+    await extract_and_store(
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        author=author,
+        title=pr_title,
+        files=files,
+        review_summary=summary,
+    )
+    ```
+    
+    See [Semantic Memory](/features/semantic-memory) for details.
+  </Tab>
+</Tabs>
+
+## Review Output Structure
+
+### Summary Format
+
+Nectr's review comment follows a structured format:
+
+```markdown
+Hi I am Nectr - AI code review agent built by [Dhanush Chalicheemala](https://x.com/dhanush_chali)
+
+## Verdict: **APPROVE**
+
+[High-level analysis with key points]
+
+### Key Changes:
+- ✅ [Positive change 1]
+- ✅ [Positive change 2]
+- ⚠️ [Minor concern 1]
+
+### Suggestions:
+- [Suggestion 1]
+- [Suggestion 2]
+
+## Resolved Issues
+- 🟢 Closes [#123: Issue title](https://github.com/org/repo/issues/123)
+
+## 🔍 Potentially Resolves
+_These open issues appear to be resolved by this PR's changes, even though they weren't explicitly mentioned:_
+- 🟡 [#145: Issue title](https://github.com/org/repo/issues/145) — [Reason why Claude thinks it's resolved]
+
+## ⚠️ Open PR Conflicts
+These open PRs touch the same files — coordinate to avoid merge conflicts:
+- [PR #87](https://github.com/org/repo/pull/87): **Refactor auth middleware** by @bob — shared files: `src/auth/middleware.py`, `src/auth/jwt.py`
+
+## Related Past Work
+- Similar to [PR #120](https://github.com/org/repo/pull/120) [APPROVE]: Add JWT refresh token logic
+
+---
+*If you have any concerns, connect with [Dhanush Chalicheemala](https://x.com/dhanush_chali)*
+```
+
+### Verdict Types
+
+<CardGroup cols={3}>
+  <Card title="APPROVE" icon="check-circle">
+    No blocking issues found. PR is ready to merge.
+    
+    **GitHub event**: `APPROVE`
+    
+    **Criteria**:
+    - No critical bugs or security vulnerabilities
+    - Code follows project patterns
+    - Test coverage adequate
+  </Card>
+
+  <Card title="REQUEST_CHANGES" icon="x-circle">
+    Blocking issues must be addressed before merge.
+    
+    **GitHub event**: `REQUEST_CHANGES`
+    
+    **Criteria**:
+    - Critical bugs (e.g., unhandled exceptions)
+    - Security vulnerabilities (e.g., SQL injection)
+    - Breaking changes without migration path
+  </Card>
+
+  <Card title="NEEDS_DISCUSSION" icon="message-circle">
+    Non-blocking concerns that warrant team discussion.
+    
+    **GitHub event**: `COMMENT`
+    
+    **Criteria**:
+    - Architectural decisions unclear
+    - Performance implications uncertain
+    - Edge cases need clarification
+  </Card>
+</CardGroup>
+
+## Advanced Features
+
+### Semantic Issue Resolution
+
+Nectr detects issues resolved **without explicit `Fixes #N` mentions**:
+
+```python
+# app/services/pr_review_service.py:71-127
+candidate_issues = await _find_candidate_issues(
+    owner, repo,
+    pr_title, pr_body,
+    file_paths,
+    already_referenced=set(issue_refs),  # Exclude issues already mentioned
+)
+# Returns top 8 open issues with keyword overlap score
+
+# Claude analyzes candidates during agentic loop
+# Example tool call:
+get_issue_details([145, 167, 189])  # Fetch full details for top candidates
+
+# Claude returns semantic matches in ReviewResult:
+review_result.semantic_issue_matches = [
+    {
+        "number": 145,
+        "reason": "This PR fixes the root cause by adding error handling to JWT decode",
+        "confidence": "high"  # "high" | "medium"
+    }
+]
+```
+
+**Displayed in review**:
+
+```markdown
+## 🔍 Potentially Resolves
+_These open issues appear to be resolved by this PR's changes, even though they weren't explicitly mentioned:_
+- 🟢 [#145: Refresh token endpoint returns 500](https://github.com/org/repo/issues/145) — This PR fixes the root cause by adding error handling to JWT decode
+```
+
+### Open PR Conflict Detection
+
+```python
+# app/services/pr_review_service.py:142-151
+pr_files_results = await asyncio.gather(
+    *[github_client.get_pr_files_list(owner, repo, p["number"]) for p in open_prs],
+    return_exceptions=True,
+)
+
+current_files_set = set(current_file_paths)
+for pr, pr_files in zip(open_prs, pr_files_results):
+    overlap = sorted(current_files_set & set(pr_files))
+    if overlap:
+        conflicting.append({"number": pr["number"], "overlap": overlap})
+```
+
+**Helps developers**:
+- Coordinate with teammates on concurrent work
+- Avoid merge conflicts
+- Decide merge order
+
+### Related Past Work (Neo4j)
+
+Shows PRs that touched the same files (structural similarity):
+
+```cypher
+UNWIND $paths AS path
+MATCH (pr:PullRequest {repo: $repo})-[:TOUCHES]->(f:File {repo: $repo, path: path})
+WHERE pr.verdict IS NOT NULL
+WITH pr, count(DISTINCT f) AS overlap
+ORDER BY overlap DESC
+LIMIT 5
+RETURN pr.number, pr.title, pr.author, pr.verdict, overlap
+```
+
+**Displayed in review**:
+
+```markdown
+## Related Past Work
+- Similar to [PR #120](https://github.com/org/repo/pull/120) [APPROVE]: Add JWT refresh token logic
+- Similar to [PR #98](https://github.com/org/repo/pull/98) [REQUEST_CHANGES]: Implement token refresh endpoint
+```
+
+## Parallel Review Mode
+
+Set `PARALLEL_REVIEW_AGENTS=true` to run 3 specialized agents concurrently:
+
+```python
+# app/services/ai_service.py:200-230
+if settings.PARALLEL_REVIEW_AGENTS:
+    security_review, performance_review, style_review = await asyncio.gather(
+        analyze_security(pr, diff, files),
+        analyze_performance(pr, diff, files),
+        analyze_style(pr, diff, files)
+    )
+    
+    # Synthesis agent combines all three
+    final_review = await synthesize_reviews(
+        security_review, performance_review, style_review
+    )
+else:
+    # Standard: single agentic loop with 8 tools
+    final_review = await analyze_pull_request_agentic(
+        pr, diff, files, tool_executor
+    )
+```
+
+<CardGroup cols={3}>
+  <Card title="Security Agent" icon="shield">
+    - SQL injection
+    - XSS vulnerabilities
+    - Hardcoded secrets
+    - Insecure dependencies
+  </Card>
+
+  <Card title="Performance Agent" icon="zap">
+    - N+1 queries
+    - Inefficient algorithms
+    - Memory leaks
+    - Missing indexes
+  </Card>
+
+  <Card title="Style Agent" icon="brush">
+    - Code formatting
+    - Naming conventions
+    - Comment quality
+    - Linter violations
+  </Card>
+</CardGroup>
+
+<Warning>
+  Parallel mode uses **4× the Claude API quota** but reduces latency by ~30% due to concurrent execution.
+</Warning>
+
+## Review Quality Metrics
+
+Track review performance in the dashboard:
+
+- **Success Rate**: % of reviews that completed without errors
+- **Avg Processing Time**: Median time from webhook to posted comment
+- **Verdict Distribution**: APPROVE vs REQUEST_CHANGES vs NEEDS_DISCUSSION
+- **Inline Suggestions**: Avg number of line-specific suggestions per PR
+
+See [Analytics Dashboard](/dashboard/analytics) for details.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Review posted but inline suggestions missing">
+    **Cause**: Line number resolution failed (AI's `line_hint` didn't match any line in the diff).
+    
+    **Solution**: This is expected for:
+    - Comments about unchanged lines (only `+` additions are indexed)
+    - Multi-file architectural suggestions (no specific line)
+    
+    These appear as top-level review comments without inline placement.
+  </Accordion>
+
+  <Accordion title="AI missed an obvious bug">
+    **Cause**: Insufficient context (file not read during agentic loop).
+    
+    **Solution**: Add a custom memory rule:
+    ```python
+    POST /api/v1/memory
+    {
+      "repo": "org/repo",
+      "content": "Always check for null pointer exceptions in {specific_file}",
+      "memory_type": "project_pattern"
+    }
+    ```
+    
+    Claude will search this memory on future reviews.
+  </Accordion>
+
+  <Accordion title="Semantic issue matches are incorrect">
+    **Cause**: Keyword overlap produced false positives.
+    
+    **Mitigation**: Only **high confidence** matches are indexed in Neo4j. Medium confidence matches are displayed but not auto-closed.
+    
+    Claude's judgment improves over time as the project memory grows.
+  </Accordion>
+
+  <Accordion title="Review says 'Sentry integration not configured'">
+    This is expected if `SENTRY_MCP_URL` is not set. Sentry integration is **optional**.
+    
+    Set these env vars to enable:
+    ```env
+    SENTRY_MCP_URL=https://sentry-mcp-server.example.com
+    SENTRY_AUTH_TOKEN=your_token
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Knowledge Graph" icon="git-branch" href="/features/knowledge-graph">
+    Learn how Neo4j tracks code ownership and related PRs
+  </Card>
+
+  <Card title="Semantic Memory" icon="brain" href="/features/semantic-memory">
+    Understand how Nectr remembers project patterns
+  </Card>
+
+  <Card title="AI Analysis" icon="sparkles" href="/features/ai-analysis">
+    Deep dive into the agentic review process
+  </Card>
+
+  <Card title="Dashboard" icon="chart-line" href="/dashboard/overview">
+    Track review metrics and team performance
+  </Card>
+</CardGroup>

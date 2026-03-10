@@ -1,0 +1,444 @@
+---
+title: 'Analytics'
+description: 'Team metrics, insights, and repository intelligence'
+---
+
+## Get Summary
+
+Retrieve high-level analytics summary across all connected repositories.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/analytics/summary' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/analytics/summary`
+
+**Authentication**: Required
+
+### Response
+
+<ResponseField name="total_reviews" type="integer" required>
+  Total unique PRs reviewed (deduplicated)
+</ResponseField>
+
+<ResponseField name="success_rate" type="number" required>
+  Percentage of reviews that completed successfully
+</ResponseField>
+
+<ResponseField name="avg_processing_seconds" type="number" required>
+  Average AI review processing time in seconds
+</ResponseField>
+
+<ResponseField name="connected_repos" type="integer" required>
+  Number of active repository connections
+</ResponseField>
+
+<ResponseField name="reviews_today" type="integer" required>
+  PRs reviewed today
+</ResponseField>
+
+<ResponseField name="reviews_this_week" type="integer" required>
+  PRs reviewed in the last 7 days
+</ResponseField>
+
+<ResponseField name="avg_merge_hours" type="number">
+  Average time from PR open to merge (hours)
+</ResponseField>
+
+<ResponseField name="avg_pr_size" type="integer">
+  Average PR size (additions + deletions)
+</ResponseField>
+
+<ResponseField name="last_week_activity" type="array" required>
+  Array of PR activity from the last 7 days
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "total_reviews": 47,
+  "success_rate": 95.7,
+  "avg_processing_seconds": 38.2,
+  "connected_repos": 3,
+  "reviews_today": 2,
+  "reviews_this_week": 12,
+  "avg_merge_hours": 18.4,
+  "avg_pr_size": 342,
+  "last_week_activity": [
+    {
+      "pr_number": 42,
+      "title": "Add authentication",
+      "author": "octocat",
+      "repo_name": "octocat/nectr",
+      "state": "merged",
+      "additions": 234,
+      "deletions": 56,
+      "changed_files": 8
+    }
+  ]
+}
+```
+
+---
+
+## Get Timeline
+
+Retrieve daily review counts over a time period.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/analytics/timeline?days=30' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/analytics/timeline`
+
+**Authentication**: Required
+
+<ParamField query="days" type="integer" default="30">
+  Number of days to include (7-90)
+</ParamField>
+
+### Response
+
+Array of daily statistics:
+
+<ResponseField name="date" type="string" required>
+  ISO date (YYYY-MM-DD)
+</ResponseField>
+
+<ResponseField name="total" type="integer" required>
+  Total unique PRs reviewed on this day
+</ResponseField>
+
+<ResponseField name="completed" type="integer" required>
+  Successfully completed reviews
+</ResponseField>
+
+<ResponseField name="failed" type="integer" required>
+  Failed reviews
+</ResponseField>
+
+### Example Response
+
+```json
+[
+  {
+    "date": "2025-03-10",
+    "total": 5,
+    "completed": 4,
+    "failed": 1
+  },
+  {
+    "date": "2025-03-09",
+    "total": 3,
+    "completed": 3,
+    "failed": 0
+  }
+]
+```
+
+---
+
+## Get Insights
+
+Detailed analytics including merge times, per-author stats, verdict breakdown, and issue categorization.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/analytics/insights?days=30' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/analytics/insights`
+
+**Authentication**: Required
+
+<ParamField query="days" type="integer" default="30">
+  Analysis period in days (7-90)
+</ParamField>
+
+### Response
+
+<ResponseField name="period_days" type="integer" required>
+  Number of days analyzed
+</ResponseField>
+
+<ResponseField name="total_prs" type="integer" required>
+  Total unique PRs in period
+</ResponseField>
+
+<ResponseField name="avg_pr_size" type="integer">
+  Average PR size (lines changed)
+</ResponseField>
+
+<ResponseField name="merge_time" type="object" required>
+  Merge time statistics (hours)
+</ResponseField>
+
+<ResponseField name="verdicts" type="object" required>
+  AI review verdict counts: `APPROVE`, `REQUEST_CHANGES`, `NEEDS_DISCUSSION`
+</ResponseField>
+
+<ResponseField name="confidence_distribution" type="object" required>
+  Distribution of confidence scores (1-5)
+</ResponseField>
+
+<ResponseField name="issue_categories" type="object" required>
+  Counts of issues by severity: `critical`, `moderate`, `minor`, `total`
+</ResponseField>
+
+<ResponseField name="per_author" type="array" required>
+  Per-developer statistics
+</ResponseField>
+
+<ResponseField name="per_repo" type="array" required>
+  Per-repository statistics
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "period_days": 30,
+  "total_prs": 47,
+  "avg_pr_size": 342,
+  "merge_time": {
+    "avg_hours": 18.4,
+    "median_hours": 12.5,
+    "fastest_hours": 2.3,
+    "slowest_hours": 72.1,
+    "sample_size": 38
+  },
+  "verdicts": {
+    "APPROVE": 32,
+    "REQUEST_CHANGES": 8,
+    "NEEDS_DISCUSSION": 7
+  },
+  "confidence_distribution": {
+    "1": 0,
+    "2": 2,
+    "3": 8,
+    "4": 25,
+    "5": 12
+  },
+  "issue_categories": {
+    "critical": 5,
+    "moderate": 18,
+    "minor": 34,
+    "total": 57
+  },
+  "per_author": [
+    {
+      "author": "octocat",
+      "prs": 23,
+      "merged": 21,
+      "issues_flagged": 12,
+      "avg_confidence": 4.2
+    }
+  ],
+  "per_repo": [
+    {
+      "repo": "octocat/nectr",
+      "prs": 47,
+      "merged": 42,
+      "issues": 57,
+      "merge_rate": 89.4
+    }
+  ]
+}
+```
+
+---
+
+## Get Contributors
+
+Team leader view: per-developer profiles from the memory layer.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/analytics/contributors?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/analytics/contributors`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-indexed)
+</ParamField>
+
+<ParamField query="per_page" type="integer" default="20">
+  Items per page (1-100)
+</ParamField>
+
+### Response
+
+<ResponseField name="repo" type="string" required>
+  Repository name
+</ResponseField>
+
+<ResponseField name="contributor_count" type="integer" required>
+  Total contributors
+</ResponseField>
+
+<ResponseField name="page" type="integer" required>
+  Current page
+</ResponseField>
+
+<ResponseField name="per_page" type="integer" required>
+  Items per page
+</ResponseField>
+
+<ResponseField name="total_pages" type="integer" required>
+  Total pages available
+</ResponseField>
+
+<ResponseField name="contributors" type="array" required>
+  Array of contributor profiles
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "repo": "octocat/nectr",
+  "contributor_count": 8,
+  "page": 1,
+  "per_page": 20,
+  "total_pages": 1,
+  "contributors": [
+    {
+      "username": "octocat",
+      "profile_summary": "Senior backend developer with expertise in Python and FastAPI",
+      "patterns": [
+        "Prefers async/await patterns for I/O operations",
+        "Always includes comprehensive error handling"
+      ],
+      "strengths": [
+        "Database optimization",
+        "API design"
+      ],
+      "pr_count": 23,
+      "commit_count": 147,
+      "last_seen_pr": 42
+    }
+  ]
+}
+```
+
+### Notes
+
+- Requires Mem0 memory layer to be configured
+- Returns empty list if memory not available
+- Only includes developers with recorded activity
+
+---
+
+## Get Graph Analytics
+
+Repository intelligence from Neo4j graph + GitHub API.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/analytics/graph?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/analytics/graph`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+### Response
+
+<ResponseField name="repo" type="string" required>
+  Repository name
+</ResponseField>
+
+<ResponseField name="languages" type="array" required>
+  Language distribution from GitHub (byte-accurate)
+</ResponseField>
+
+<ResponseField name="file_hotspots" type="array" required>
+  Most PR-touched files (up to 10)
+</ResponseField>
+
+<ResponseField name="high_risk_files" type="array" required>
+  Files with most REQUEST_CHANGES verdicts (up to 8)
+</ResponseField>
+
+<ResponseField name="dead_files" type="object" required>
+  Files never touched by reviewed PRs
+</ResponseField>
+
+<ResponseField name="code_ownership" type="array" required>
+  File → dominant contributor mapping (up to 10)
+</ResponseField>
+
+<ResponseField name="developer_expertise" type="array" required>
+  Per-developer directory expertise (up to 8)
+</ResponseField>
+
+<ResponseField name="contributors" type="array" required>
+  Top 10 contributors by commit count (default branch, all time)
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "repo": "octocat/nectr",
+  "languages": [
+    {"name": "Python", "bytes": 234567, "pct": 78.3},
+    {"name": "JavaScript", "bytes": 45678, "pct": 15.2},
+    {"name": "Shell", "bytes": 19456, "pct": 6.5}
+  ],
+  "file_hotspots": [
+    {"path": "app/api/v1/reviews.py", "touch_count": 12}
+  ],
+  "high_risk_files": [
+    {"path": "app/auth/router.py", "issue_count": 5}
+  ],
+  "dead_files": {
+    "count": 23,
+    "sample": ["legacy/old_api.py", "utils/deprecated.py"]
+  },
+  "code_ownership": [
+    {"path": "app/api/v1/reviews.py", "owner": "octocat", "contribution_pct": 82.5}
+  ],
+  "developer_expertise": [
+    {"username": "octocat", "directory": "app/api/v1", "file_count": 15}
+  ],
+  "contributors": [
+    {
+      "login": "octocat",
+      "total": 147,
+      "additions": 12456,
+      "deletions": 3421,
+      "weeks": [{"w": 1709596800, "c": 8}]
+    }
+  ]
+}
+```
+
+### Error Responses
+
+- **403**: Repo not connected or access denied
+- **400**: Invalid repo format (must be `owner/repo`)

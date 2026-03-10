@@ -1,0 +1,325 @@
+---
+title: Semantic Memory
+description: Learn how Nectr uses Mem0 to remember project patterns, coding standards, and developer habits for increasingly personalized reviews.
+---
+
+## Overview
+
+Nectr integrates **Mem0**, a semantic memory layer that learns from every PR review to deliver increasingly personalized and context-aware feedback. Unlike traditional static rule engines, Mem0 builds a dynamic understanding of your project's patterns, architectural decisions, and individual developer strengths.
+
+<Info>
+Mem0 is a managed AI memory service that stores contextual memories about your project and team, automatically retrieved during PR reviews to ground AI analysis in your specific codebase culture.
+</Info>
+
+## How It Works
+
+<Steps>
+  <Step title="Memory Extraction">
+    After each PR review, Claude analyzes the review content and extracts key patterns:
+    - Project-level patterns (architectural decisions, coding conventions)
+    - Developer-specific patterns (coding style, common mistakes)
+    - Risk modules (files or patterns that frequently cause issues)
+    - Contributor profiles (expertise areas, review preferences)
+  </Step>
+
+  <Step title="Memory Storage">
+    Extracted memories are stored in Mem0 with metadata:
+    - **user_id**: GitHub username for developer-specific memories
+    - **repo**: Repository identifier for project-level patterns
+    - **memory_type**: Classification (project_pattern, developer_strength, etc.)
+    - **tags**: Searchable keywords for retrieval
+  </Step>
+
+  <Step title="Context Retrieval">
+    During PR reviews, Nectr queries Mem0 for relevant memories:
+    - Project patterns matching changed files or features
+    - Developer-specific habits for the PR author
+    - Historical decisions related to the code being modified
+  </Step>
+
+  <Step title="AI Grounding">
+    Retrieved memories are injected into Claude's context, ensuring reviews align with:
+    - Established project conventions
+    - Past architectural decisions
+    - Individual developer growth areas
+  </Step>
+</Steps>
+
+## Memory Types
+
+Nectr extracts and stores six types of memories:
+
+<AccordionGroup>
+  <Accordion title="Project Patterns">
+    **What it captures:** Recurring architectural patterns, coding conventions, and project-wide standards.
+
+    **Example:**
+    ```
+    "This project uses async/await for all database operations with SQLAlchemy's async session pattern."
+    ```
+
+    **Impact:** Ensures new code follows established patterns, reducing review friction.
+  </Accordion>
+
+  <Accordion title="Architectural Decisions">
+    **What it captures:** Key technical decisions and the reasoning behind them.
+
+    **Example:**
+    ```
+    "We use Neo4j for file ownership tracking because relational queries were too slow for deep graph traversals."
+    ```
+
+    **Impact:** Prevents regression to previously considered and rejected approaches.
+  </Accordion>
+
+  <Accordion title="Developer Patterns">
+    **What it captures:** Individual coding habits, common mistakes, and growth areas.
+
+    **Example:**
+    ```
+    "alice tends to forget async context managers for database sessions."
+    ```
+
+    **Impact:** Provides personalized feedback targeting specific improvement areas.
+  </Accordion>
+
+  <Accordion title="Developer Strengths">
+    **What it captures:** Areas of expertise and consistently high-quality contributions.
+
+    **Example:**
+    ```
+    "bob writes excellent API documentation and comprehensive error handling."
+    ```
+
+    **Impact:** Recognizes strengths while focusing feedback on other areas.
+  </Accordion>
+
+  <Accordion title="Risk Modules">
+    **What it captures:** Files or modules that frequently introduce bugs or require extra scrutiny.
+
+    **Example:**
+    ```
+    "app/services/pr_review_service.py has had 3 race condition bugs in webhook deduplication."
+    ```
+
+    **Impact:** Triggers extra careful review for high-risk areas.
+  </Accordion>
+
+  <Accordion title="Contributor Profiles">
+    **What it captures:** Overall developer profiles including tenure, focus areas, and review preferences.
+
+    **Example:**
+    ```
+    "carol is a frontend specialist who prefers detailed performance feedback."
+    ```
+
+    **Impact:** Tailors review tone and focus to individual preferences.
+  </Accordion>
+</AccordionGroup>
+
+## Implementation Details
+
+### Memory Adapter
+
+Nectr uses an async wrapper around the Mem0 Python client:
+
+```python app/services/memory_adapter.py
+class MemoryAdapter:
+    """Async wrapper for Mem0 operations."""
+
+    async def add(
+        self,
+        messages: str | list[dict],
+        user_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Add a memory to Mem0."""
+        return await asyncio.to_thread(
+            self.client.add,
+            messages=messages,
+            user_id=user_id,
+            metadata=metadata,
+        )
+
+    async def search(
+        self,
+        query: str,
+        user_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search memories by semantic similarity."""
+        return await asyncio.to_thread(
+            self.client.search,
+            query=query,
+            user_id=user_id,
+            limit=limit,
+        )
+```
+
+### Memory Extraction
+
+After each review, Claude extracts structured memories:
+
+```python app/services/memory_extractor.py
+async def extract_and_store_memories(
+    repo: str,
+    pr_number: int,
+    review_content: str,
+    developer: str,
+) -> list[dict]:
+    """Extract memories from review content using Claude."""
+
+    # Claude prompt requests structured JSON output
+    prompt = f"""
+    Extract learnings from this PR review:
+
+    Repository: {repo}
+    PR: #{pr_number}
+    Author: {developer}
+    Review: {review_content}
+
+    Extract:
+    1. project_pattern - Project-wide patterns
+    2. decision - Architectural decisions
+    3. developer_pattern - Developer-specific patterns
+    4. developer_strength - Developer strengths
+    5. risk_module - High-risk code areas
+    6. contributor_profile - Developer profile
+    """
+
+    # Claude returns structured memories
+    memories = await ai_service.extract_memories(prompt)
+
+    # Store each memory in Mem0
+    for memory in memories:
+        await memory_adapter.add(
+            messages=memory["content"],
+            user_id=developer if memory["type"].startswith("developer_") else None,
+            metadata={
+                "repo": repo,
+                "memory_type": memory["type"],
+                "pr_number": pr_number,
+            },
+        )
+```
+
+## Memory Management API
+
+Nectr exposes a REST API for managing memories:
+
+<CardGroup cols={2}>
+  <Card title="List Memories" icon="list" href="/api/endpoints/memory">
+    GET /api/v1/memory - Retrieve all memories for a repository
+  </Card>
+  <Card title="Add Memory" icon="plus" href="/api/endpoints/memory">
+    POST /api/v1/memory - Add a custom rule or pattern
+  </Card>
+  <Card title="Delete Memory" icon="trash" href="/api/endpoints/memory">
+    DELETE /api/v1/memory/:id - Remove a specific memory
+  </Card>
+  <Card title="Project Map" icon="map" href="/api/endpoints/memory">
+    GET /api/v1/memory/project-map - Get project context summary
+  </Card>
+</CardGroup>
+
+## Configuration
+
+Configure Mem0 with a single environment variable:
+
+```bash .env
+MEM0_API_KEY=m0-...
+```
+
+Get your API key from [mem0.ai](https://mem0.ai).
+
+<Note>
+Mem0 is optional but highly recommended. Without it, reviews lack historical context and personalization.
+</Note>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Seed Initial Patterns">
+    Add 5-10 core project patterns manually via the API to bootstrap the memory system:
+
+    ```bash
+    curl -X POST https://your-backend.com/api/v1/memory \
+      -H "Content-Type: application/json" \
+      -d '{
+        "content": "All API routes use Pydantic models for request/response validation",
+        "metadata": {"memory_type": "project_pattern"}
+      }'
+    ```
+  </Accordion>
+
+  <Accordion title="Review Extracted Memories">
+    Periodically audit extracted memories via the dashboard to:
+    - Remove outdated patterns
+    - Correct misclassified memories
+    - Merge duplicate patterns
+  </Accordion>
+
+  <Accordion title="Leverage Developer Profiles">
+    Encourage team members to review their developer-specific memories and add growth goals:
+
+    ```
+    "I want to improve error handling and add more try/except blocks."
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Memory in Action
+
+**Scenario:** A developer submits a PR adding a new API endpoint without async database access.
+
+**Without Mem0:**
+> "Consider using async database access for better performance."
+
+**With Mem0:**
+> "This project uses async SQLAlchemy sessions for all database operations (see `app/core/database.py`). Please update this endpoint to use `async with async_session() as db:` to maintain consistency with existing endpoints like `/api/v1/repos` and `/api/v1/reviews`."
+
+<Tip>
+The more PRs reviewed, the more intelligent and personalized Nectr becomes. Mem0 creates a flywheel effect where review quality improves with usage.
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Memories Not Appearing in Reviews">
+    **Cause:** Memory extraction or retrieval failure.
+
+    **Fix:**
+    1. Check Mem0 API key is valid: `curl https://api.mem0.ai/v1/memories -H "Authorization: Bearer $MEM0_API_KEY"`
+    2. Review backend logs for memory extraction errors
+    3. Verify memories exist: GET /api/v1/memory?repo=owner/repo
+  </Accordion>
+
+  <Accordion title="Duplicate or Conflicting Memories">
+    **Cause:** Memory extraction created redundant patterns.
+
+    **Fix:**
+    1. List memories: GET /api/v1/memory
+    2. Delete duplicates: DELETE /api/v1/memory/:id
+    3. Add a consolidated memory via POST /api/v1/memory
+  </Accordion>
+
+  <Accordion title="Outdated Patterns Affecting Reviews">
+    **Cause:** Project evolved but old memories remain.
+
+    **Fix:**
+    1. Review project map: GET /api/v1/memory/project-map
+    2. Delete obsolete memories
+    3. Rescan repository: POST /api/v1/memory/rescan
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AI Analysis" icon="brain" href="/features/ai-analysis">
+    Learn how Claude uses memories during PR reviews
+  </Card>
+  <Card title="Memory API" icon="code" href="/api/endpoints/memory">
+    Explore the complete memory management API
+  </Card>
+</CardGroup>

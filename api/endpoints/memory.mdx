@@ -1,0 +1,335 @@
+---
+title: 'Memory'
+description: 'CRUD operations for the Mem0 memory layer'
+---
+
+## List Memories
+
+Retrieve all memories for a repository, optionally filtered by type.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/memory?repo=octocat/nectr&memory_type=project_rule' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/memory`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+<ParamField query="memory_type" type="string">
+  Filter by memory type (e.g., `project_rule`, `contributor_profile`, `developer_pattern`)
+</ParamField>
+
+### Response
+
+<ResponseField name="memories" type="array" required>
+  Array of memory objects
+</ResponseField>
+
+<ResponseField name="count" type="integer" required>
+  Total number of memories returned
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "memories": [
+    {
+      "id": "mem_abc123",
+      "memory": "Always use async/await for database operations",
+      "metadata": {
+        "memory_type": "project_rule",
+        "repo": "octocat/nectr",
+        "created_at": "2025-03-01T10:00:00Z"
+      }
+    }
+  ],
+  "count": 1
+}
+```
+
+### Error Responses
+
+- **403**: Repo not connected or access denied
+
+---
+
+## Get Memory Stats
+
+Retrieve memory counts by type for a repository.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/memory/stats?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/memory/stats`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+### Response
+
+<ResponseField name="repo" type="string" required>
+  Repository name
+</ResponseField>
+
+<ResponseField name="total" type="integer" required>
+  Total memories
+</ResponseField>
+
+<ResponseField name="by_type" type="object" required>
+  Counts grouped by memory type
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "repo": "octocat/nectr",
+  "total": 47,
+  "by_type": {
+    "project_rule": 8,
+    "contributor_profile": 5,
+    "developer_pattern": 12,
+    "developer_strength": 10,
+    "architecture_pattern": 7,
+    "coding_convention": 5
+  }
+}
+```
+
+---
+
+## Get Project Map
+
+Retrieve the full project map for onboarding and context.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/memory/project-map?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/memory/project-map`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+### Response
+
+<ResponseField name="memories" type="array" required>
+  Array of project-level memories (architecture, conventions, patterns)
+</ResponseField>
+
+<ResponseField name="count" type="integer" required>
+  Total memories returned
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "memories": [
+    {
+      "memory": "FastAPI backend with SQLAlchemy ORM and PostgreSQL",
+      "metadata": {
+        "memory_type": "architecture_pattern"
+      }
+    },
+    {
+      "memory": "Use snake_case for Python variables and functions",
+      "metadata": {
+        "memory_type": "coding_convention"
+      }
+    }
+  ],
+  "count": 2
+}
+```
+
+---
+
+## Rescan Repository
+
+Re-run the project scanner to update memories from the latest code.
+
+<RequestExample>
+```bash cURL
+curl -X POST 'http://localhost:8000/api/v1/memory/rescan?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `POST /api/v1/memory/rescan`
+
+**Authentication**: Required
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"rescan_started"`
+</ResponseField>
+
+<ResponseField name="repo" type="string" required>
+  Repository name
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "rescan_started",
+  "repo": "octocat/nectr"
+}
+```
+
+### Notes
+
+- Runs asynchronously in background
+- Scans repository structure and extracts conventions using AI
+- Updates existing memories (does not duplicate)
+
+### Error Responses
+
+- **400**: Invalid repo format
+- **403**: Repo not connected
+- **503**: Memory layer not configured
+
+---
+
+## Add Memory
+
+Manually add a memory (e.g., custom project rule).
+
+<CodeGroup>
+```bash cURL
+curl -X POST 'http://localhost:8000/api/v1/memory' \
+  --cookie 'access_token=<your_jwt>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "repo": "octocat/nectr",
+    "content": "Always validate input with Pydantic models",
+    "memory_type": "project_rule"
+  }'
+```
+
+```javascript JavaScript
+fetch('http://localhost:8000/api/v1/memory', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    repo: 'octocat/nectr',
+    content: 'Always validate input with Pydantic models',
+    memory_type: 'project_rule'
+  })
+})
+```
+</CodeGroup>
+
+**Method**: `POST /api/v1/memory`
+
+**Authentication**: Required
+
+### Request Body
+
+<ParamField body="repo" type="string" required>
+  Repository in `owner/repo` format
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  Memory content (free text)
+</ParamField>
+
+<ParamField body="memory_type" type="string" default="project_rule">
+  Memory type classification
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="string" required>
+  Memory ID (from Mem0)
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Always `"added"`
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "id": "mem_xyz789",
+  "status": "added"
+}
+```
+
+### Error Responses
+
+- **403**: Repo not connected
+- **503**: Memory layer not configured
+
+---
+
+## Delete Memory
+
+Delete a memory by ID.
+
+<RequestExample>
+```bash cURL
+curl -X DELETE 'http://localhost:8000/api/v1/memory/mem_xyz789?repo=octocat/nectr' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `DELETE /api/v1/memory/{memory_id}`
+
+**Authentication**: Required
+
+<ParamField path="memory_id" type="string" required>
+  Memory ID to delete
+</ParamField>
+
+<ParamField query="repo" type="string" required>
+  Repository in `owner/repo` format (for access control)
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"deleted"`
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+### Error Responses
+
+- **403**: Repo not connected
+- **404**: Memory not found or already deleted

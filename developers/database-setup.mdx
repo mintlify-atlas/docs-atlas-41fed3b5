@@ -1,0 +1,556 @@
+---
+title: Database Setup
+description: Configure PostgreSQL and Neo4j for Nectr
+---
+
+## Overview
+
+Nectr uses two databases:
+
+- **PostgreSQL** — User accounts, repo connections, webhook events, PR review history
+- **Neo4j** — Knowledge graph (files, PRs, developers, issues, and their relationships)
+
+Both are required for full functionality.
+
+## PostgreSQL Setup
+
+### Option 1: Supabase (Recommended)
+
+Supabase provides a free PostgreSQL database with connection pooling.
+
+<Steps>
+  <Step title="Create Supabase project">
+    1. Go to [supabase.com](https://supabase.com) and sign up
+    2. Click **New Project**
+    3. Choose an organization (or create one)
+    4. Set:
+       - **Name**: `nectr-db`
+       - **Database Password**: Generate a strong password
+       - **Region**: Choose one close to your deployment
+    5. Click **Create new project** (takes 2-3 minutes)
+  </Step>
+
+  <Step title="Get connection string">
+    1. Navigate to **Project Settings** → **Database**
+    2. Scroll to **Connection Pooling** section
+    3. Select **Session mode**
+    4. Copy the **Connection string**
+  </Step>
+
+  <Step title="Format for SQLAlchemy">
+    Convert the Supabase connection string to SQLAlchemy async format:
+
+    **Supabase format**:
+    ```
+    postgresql://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+    ```
+
+    **SQLAlchemy format** (add `+asyncpg`):
+    ```
+    postgresql+asyncpg://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+    ```
+
+    Set this as `DATABASE_URL` in your `.env` file.
+  </Step>
+
+  <Step title="Verify connection">
+    Test the connection:
+
+    ```bash
+    # Using psql CLI
+    psql "postgresql://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres"
+
+    # Using Python
+    python -c "import asyncpg; import asyncio; asyncio.run(asyncpg.connect('postgresql://...'))"
+    ```
+  </Step>
+</Steps>
+
+### Option 2: Railway PostgreSQL
+
+Railway provides a managed PostgreSQL addon.
+
+<Steps>
+  <Step title="Add PostgreSQL to Railway project">
+    1. Open your Railway project
+    2. Click **New** → **Database** → **PostgreSQL**
+    3. Railway will automatically provision the database
+  </Step>
+
+  <Step title="Get DATABASE_URL">
+    Railway automatically sets `DATABASE_URL` in your environment. 
+
+    To view it:
+    1. Click on the PostgreSQL service
+    2. Go to **Variables** tab
+    3. Copy the `DATABASE_URL` value
+  </Step>
+
+  <Step title="Convert to async format">
+    Railway's `DATABASE_URL` uses `postgresql://`. Change it to `postgresql+asyncpg://`:
+
+    **Railway default**:
+    ```
+    postgresql://postgres:password@host:5432/database
+    ```
+
+    **For Nectr** (add `+asyncpg`):
+    ```
+    postgresql+asyncpg://postgres:password@host:5432/database
+    ```
+  </Step>
+</Steps>
+
+### Option 3: Local PostgreSQL
+
+For local development only.
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    <CodeGroup>
+    ```bash macOS
+    brew install postgresql@16
+    brew services start postgresql@16
+    ```
+
+    ```bash Ubuntu/Debian
+    sudo apt update
+    sudo apt install postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    ```
+
+    ```bash Windows
+    # Download from https://www.postgresql.org/download/windows/
+    # Or use Docker:
+    docker run -d \
+      --name nectr-postgres \
+      -e POSTGRES_PASSWORD=nectr \
+      -e POSTGRES_DB=nectr \
+      -p 5432:5432 \
+      postgres:16
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create database">
+    ```bash
+    # macOS/Linux
+    createdb nectr
+
+    # Or via psql
+    psql -U postgres -c "CREATE DATABASE nectr;"
+    ```
+  </Step>
+
+  <Step title="Set DATABASE_URL">
+    ```env
+    DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/nectr
+    ```
+  </Step>
+</Steps>
+
+### Database Schema
+
+Nectr uses Alembic for migrations. The schema is created automatically on startup.
+
+#### Tables
+
+**users**
+- `id` (primary key)
+- `github_id` (unique, indexed)
+- `github_username`
+- `github_access_token` (encrypted with Fernet)
+- `created_at`, `updated_at`
+
+**installations**
+- `id` (primary key)
+- `user_id` (foreign key → users)
+- `repo_full_name` (e.g., `owner/repo`)
+- `installation_id` (GitHub App installation ID)
+- `github_repo_id` (GitHub repository ID)
+- `webhook_id`
+- `webhook_secret` (unique per repo)
+- `is_active`
+- `created_at`
+
+**events**
+- `id` (primary key)
+- `event_type` (e.g., `pull_request`, `issues`)
+- `payload` (JSON)
+- `status` (`pending`, `completed`, `failed`)
+- `deduplication_hash` (prevents duplicate event processing)
+- `created_at`, `processed_at`
+
+**workflow_runs**
+- `id` (primary key)
+- `event_id` (foreign key → events)
+- `workflow_type` (e.g., `pr_review`)
+- `status` (`running`, `completed`, `failed`)
+- `result` (JSON, includes AI summary and verdict)
+- `error`
+- `created_at`, `completed_at`
+
+**oauth_states**
+- `id` (primary key)
+- `state` (unique, indexed)
+- `created_at`
+- Cleaned up after OAuth flow completes
+
+#### Migrations
+
+Migrations are in `alembic/versions/`:
+
+1. **e83f4b0f5bf4** — Initial schema (users, installations, oauth_states)
+2. **a1b2c3d4e5f6** — Add `installation_id` and `github_repo_id` to installations
+
+To create a new migration:
+
+```bash
+alembic revision --autogenerate -m "description"
+alembic upgrade head
+```
+
+## Neo4j Setup
+
+### Create Neo4j Aura Instance
+
+Neo4j Aura provides a free tier with 200k nodes and 400k relationships.
+
+<Steps>
+  <Step title="Sign up for Neo4j Aura">
+    Go to [neo4j.com/cloud/aura](https://neo4j.com/cloud/aura) and create an account.
+  </Step>
+
+  <Step title="Create free instance">
+    1. Click **Create database**
+    2. Select **Free** tier
+    3. Choose a region (same as your backend deployment)
+    4. Click **Create**
+    5. Wait 2-3 minutes for provisioning
+  </Step>
+
+  <Step title="Save credentials">
+    <Warning>
+    The password is shown **only once** after creation. Download the credentials file or copy them immediately.
+    </Warning>
+
+    You'll receive:
+    - **URI**: `neo4j+s://xxxxx.databases.neo4j.io`
+    - **Username**: `neo4j`
+    - **Password**: `generated-password`
+
+    Set these in your `.env`:
+
+    ```env
+    NEO4J_URI=neo4j+s://xxxxx.databases.neo4j.io
+    NEO4J_USERNAME=neo4j
+    NEO4J_PASSWORD=your-password
+    ```
+  </Step>
+
+  <Step title="Whitelist IPs">
+    Neo4j Aura requires IP whitelisting:
+
+    1. In Neo4j console, go to instance → **Security** → **Allowed IPs**
+    2. For development: Add `0.0.0.0/0` (allow all)
+    3. For production: Add Railway/Vercel IPs (requires paid plan for static IPs)
+
+    <Warning>
+    `0.0.0.0/0` allows all IPs. For production, use specific IP ranges or Railway static IPs.
+    </Warning>
+  </Step>
+
+  <Step title="Test connection">
+    1. Open Neo4j Browser (link in Aura console)
+    2. Connect with your credentials
+    3. Run test query:
+       ```cypher
+       RETURN "Connection successful!" AS message
+       ```
+  </Step>
+</Steps>
+
+### Neo4j Schema
+
+Nectr creates constraints and indexes automatically on startup (see `app/core/neo4j_schema.py`).
+
+#### Node Types
+
+**Repository**
+- `full_name` (unique) — e.g., `owner/repo`
+- `scanned_at` — timestamp of last file tree scan
+
+**File**
+- `repo` + `path` (node key) — unique per repo
+- `extension` — file extension
+
+**PullRequest**
+- `repo` + `number` (node key) — unique per repo
+- `title`
+- `verdict` — AI verdict (`APPROVE`, `REQUEST_CHANGES`, etc.)
+- `created_at`
+
+**Developer**
+- `login` (unique) — GitHub username
+
+**Issue**
+- `repo` + `number` (node key) — unique per repo
+- `title`
+- `state` — `open` or `closed`
+
+#### Relationships
+
+- `(Repository)-[:CONTAINS]->(File)`
+- `(PullRequest)-[:TOUCHES]->(File)` — PR modified this file
+- `(PullRequest)-[:AUTHORED_BY]->(Developer)`
+- `(Developer)-[:CONTRIBUTED_TO]->(Repository)`
+- `(PullRequest)-[:CLOSES]->(Issue)` — PR closes this issue
+
+#### Constraints
+
+Created automatically on startup:
+
+```cypher
+CREATE CONSTRAINT repo_unique IF NOT EXISTS 
+  FOR (r:Repository) REQUIRE r.full_name IS UNIQUE
+
+CREATE CONSTRAINT file_unique IF NOT EXISTS 
+  FOR (f:File) REQUIRE (f.repo, f.path) IS NODE KEY
+
+CREATE CONSTRAINT pr_unique IF NOT EXISTS 
+  FOR (p:PullRequest) REQUIRE (p.repo, p.number) IS NODE KEY
+
+CREATE CONSTRAINT developer_unique IF NOT EXISTS 
+  FOR (d:Developer) REQUIRE d.login IS UNIQUE
+
+CREATE CONSTRAINT issue_unique IF NOT EXISTS 
+  FOR (i:Issue) REQUIRE (i.repo, i.number) IS NODE KEY
+```
+
+See [Neo4j Schema Reference](/developers/neo4j-schema) for details.
+
+### Graph Building
+
+#### Initial Repo Scan
+
+When you connect a repo, Nectr:
+
+1. Creates `(Repository)` node
+2. Recursively fetches file tree from GitHub
+3. Creates `(File)` node for each file
+4. Creates `(Repository)-[:CONTAINS]->(File)` relationships
+
+See `app/services/graph_builder.py:build_repo_graph()`.
+
+#### PR Indexing
+
+After reviewing a PR, Nectr:
+
+1. Creates `(PullRequest)` node
+2. Creates `(Developer)` node (if new)
+3. Creates relationships:
+   - `(PullRequest)-[:TOUCHES]->(File)` for each changed file
+   - `(PullRequest)-[:AUTHORED_BY]->(Developer)`
+   - `(Developer)-[:CONTRIBUTED_TO]->(Repository)`
+   - `(PullRequest)-[:CLOSES]->(Issue)` for linked issues
+
+See `app/services/graph_builder.py:index_pr()`.
+
+#### Auto-Scan on Startup
+
+Nectr automatically scans repos not yet indexed in Neo4j on startup:
+
+1. Waits 5 seconds after server starts
+2. Fetches all active installations from PostgreSQL
+3. Checks each repo in Neo4j
+4. Scans repos not yet indexed
+
+See `app/main.py:30-86` (`_scan_unindexed_repos` function).
+
+## Connection Pooling
+
+### PostgreSQL
+
+**Supabase** handles connection pooling automatically (Session mode, port 5432).
+
+**SQLAlchemy** pool settings (see `app/core/database.py`):
+
+```python
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=5,          # max 5 connections
+    max_overflow=10,      # +10 overflow connections
+    pool_pre_ping=True,   # verify connections before use
+)
+```
+
+### Neo4j
+
+Neo4j driver manages connection pooling internally. No configuration needed.
+
+See `app/core/neo4j_client.py` for driver initialization.
+
+## Backup and Restore
+
+### PostgreSQL (Supabase)
+
+**Backup**:
+
+```bash
+pg_dump "postgresql://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres" > nectr_backup.sql
+```
+
+**Restore**:
+
+```bash
+psql "postgresql://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres" < nectr_backup.sql
+```
+
+Supabase also provides automatic daily backups (Pro plan).
+
+### Neo4j Aura
+
+Neo4j Aura provides automatic backups:
+
+- **Free tier**: Backups every 24 hours, retained for 3 days
+- **Pro tier**: Backups every 6 hours, retained for 7 days
+
+To manually export data:
+
+```cypher
+// Export all nodes and relationships
+MATCH (n)
+OPTIONAL MATCH (n)-[r]->(m)
+RETURN n, r, m
+```
+
+Use Neo4j Browser → Export to CSV/JSON.
+
+## Monitoring
+
+### PostgreSQL
+
+**Supabase Dashboard**:
+
+- Database size and usage
+- Active connections
+- Query performance
+- Table sizes
+
+**Manual queries**:
+
+```sql
+-- Check active connections
+SELECT count(*) FROM pg_stat_activity WHERE datname = 'postgres';
+
+-- Table sizes
+SELECT 
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+
+-- Recent events
+SELECT event_type, status, created_at 
+FROM events 
+ORDER BY created_at DESC 
+LIMIT 10;
+```
+
+### Neo4j
+
+**Neo4j Aura Console**:
+
+- Node and relationship counts
+- Query performance
+- Storage usage
+
+**Manual queries**:
+
+```cypher
+// Count nodes by type
+MATCH (n)
+RETURN labels(n) AS type, count(n) AS count
+
+// Count relationships by type
+MATCH ()-[r]->()
+RETURN type(r) AS relationship, count(r) AS count
+
+// Check constraints
+SHOW CONSTRAINTS
+
+// Find most active developers
+MATCH (d:Developer)-[:AUTHORED_BY]-(pr:PullRequest)
+RETURN d.login, count(pr) AS pr_count
+ORDER BY pr_count DESC
+LIMIT 10
+
+// Find most frequently changed files
+MATCH (f:File)<-[:TOUCHES]-(pr:PullRequest)
+RETURN f.path, count(pr) AS change_count
+ORDER BY change_count DESC
+LIMIT 10
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="PostgreSQL: Connection refused">
+    - Check `DATABASE_URL` format: `postgresql+asyncpg://...`
+    - Verify host, port, username, password
+    - For Supabase: use Session mode (port 5432)
+    - Test connection: `psql "postgresql://..."`
+  </Accordion>
+
+  <Accordion title="PostgreSQL: Too many connections">
+    - Reduce SQLAlchemy `pool_size` + `max_overflow` in `app/core/database.py`
+    - Use Supabase connection pooling (recommended)
+    - Check for connection leaks (ensure `async with` context managers)
+  </Accordion>
+
+  <Accordion title="Neo4j: Connection timeout">
+    - Verify `NEO4J_URI` uses `neo4j+s://` (not `bolt://`)
+    - Check Neo4j Aura instance is running
+    - Verify IP is whitelisted in Neo4j console
+    - Test connection in Neo4j Browser
+  </Accordion>
+
+  <Accordion title="Neo4j: Authentication failed">
+    - Verify `NEO4J_USERNAME` and `NEO4J_PASSWORD` in `.env`
+    - Check credentials in Neo4j Aura console
+    - Password is case-sensitive
+  </Accordion>
+
+  <Accordion title="Alembic: Migration fails">
+    - Check Alembic logs in backend startup
+    - Manually run: `alembic upgrade head`
+    - Verify `DATABASE_URL` is correct
+    - Check for schema conflicts (drop tables and re-run)
+  </Accordion>
+
+  <Accordion title="Neo4j: Constraint creation fails">
+    - Check Neo4j version (needs 5.0+)
+    - Older versions don't support `IF NOT EXISTS` syntax
+    - Manually create constraints in Neo4j Browser
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Neo4j Schema" icon="diagram-project" href="/developers/neo4j-schema">
+    Complete Neo4j schema reference
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/developers/architecture/overview">
+    Understand Nectr's data flow
+  </Card>
+  <Card title="Local Development" icon="laptop-code" href="/developers/local-development">
+    Set up local databases
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/developers/deployment">
+    Deploy with production databases
+  </Card>
+</CardGroup>

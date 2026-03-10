@@ -1,0 +1,137 @@
+---
+title: 'Webhooks'
+description: 'GitHub webhook receiver for pull request events'
+---
+
+## GitHub Webhook
+
+Receives webhook events from GitHub for connected repositories.
+
+**Method**: `POST /api/v1/webhooks/github`
+
+**Authentication**: HMAC-SHA256 signature verification
+
+<Info>
+  This endpoint is called automatically by GitHub when PR events occur. You don't need to call it directly.
+</Info>
+
+### Headers
+
+<ParamField header="X-Hub-Signature-256" type="string" required>
+  HMAC-SHA256 signature of the request body using the webhook secret
+</ParamField>
+
+<ParamField header="X-GitHub-Hook-Installation-Target-Type" type="string">
+  Hook target type (`repository` or `integration`). Nectr only accepts `repository` webhooks.
+</ParamField>
+
+<ParamField header="X-GitHub-Event" type="string" required>
+  GitHub event type (e.g., `pull_request`, `push`)
+</ParamField>
+
+### Request Body
+
+GitHub webhook payload (JSON). See [GitHub webhook documentation](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads) for full schema.
+
+### Signature Verification
+
+In production (`APP_ENV=production`), Nectr verifies webhook signatures using HMAC-SHA256:
+
+1. Looks up the per-repo webhook secret from the database
+2. Computes expected signature: `sha256=<hmac_sha256(secret, body)>`
+3. Compares with `X-Hub-Signature-256` header using constant-time comparison
+4. Returns 403 if signatures don't match
+
+### Supported Events
+
+Nectr processes these pull request actions:
+
+- **opened**: New PR created
+- **synchronize**: New commits pushed to PR branch
+
+Other events are received and logged but not processed.
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Webhook processing status:
+  - `"received"`: Event logged but not processed
+  - `"duplicate_skipped"`: Identical event already pending/processing
+  - `"ignored"`: GitHub App event (not supported)
+</ResponseField>
+
+<ResponseField name="event_id" type="integer">
+  Internal event ID
+</ResponseField>
+
+<ResponseField name="event_type" type="string">
+  Parsed event type (e.g., `"opened_pull_request"`)
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "received",
+  "event_id": 123,
+  "event_type": "opened_pull_request"
+}
+```
+
+### Background Processing
+
+For PR events (`opened` or `synchronize`), Nectr:
+
+1. Returns 200 OK immediately (GitHub has a 10-second timeout)
+2. Marks event as `processing`
+3. Kicks off background task to perform AI code review (30-60 seconds)
+4. Posts review comment to GitHub when complete
+
+### Deduplication
+
+If a pending or processing event already exists for the same PR (within the last hour), the webhook returns:
+
+```json
+{
+  "status": "duplicate_skipped",
+  "detail": "Event already exists for octocat/nectr#42"
+}
+```
+
+This prevents duplicate reviews when GitHub retries webhook delivery.
+
+## Webhook Configuration
+
+Webhooks are automatically created when you connect a repository via `POST /api/v1/repos/{owner}/{repo}/install`.
+
+### Webhook Settings
+
+- **Payload URL**: `{BACKEND_URL}/api/v1/webhooks/github`
+- **Content type**: `application/json`
+- **Secret**: Randomly generated per repository (stored encrypted)
+- **Events**: Pull requests, Pushes (configurable)
+- **Active**: Yes
+
+### Testing Webhooks
+
+You can manually trigger webhooks from GitHub:
+
+1. Go to repository **Settings → Webhooks**
+2. Click on the Nectr webhook
+3. Scroll to **Recent Deliveries**
+4. Click **Redeliver** on any delivery
+
+### Troubleshooting
+
+**403 Invalid webhook signature**
+- Webhook secret mismatch
+- Check database `installations.webhook_secret` matches GitHub webhook configuration
+
+**Timeout (GitHub shows gray icon)**
+- Nectr server not reachable at `BACKEND_URL`
+- Check firewall, DNS, and SSL certificate
+
+**Events not triggering reviews**
+- Check `events` table in database for received events
+- Verify `status` field is `processing` or `completed`
+- Check server logs for background task errors

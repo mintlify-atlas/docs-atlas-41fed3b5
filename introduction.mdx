@@ -1,0 +1,175 @@
+---
+title: Introduction
+description: AI-powered PR review agent that automatically reviews every pull request with intelligent feedback, security checks, and contextual analysis.
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Nectr Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Nectr Hero Dark"
+/>
+
+## Welcome to Nectr
+
+Nectr is an open-source AI agent that automatically reviews every pull request in plain English. Connect a repository, and when a PR is opened, Nectr posts a structured review as a GitHub comment — covering bugs, security issues, performance concerns, and style improvements — with a clear verdict and inline suggestions.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running with Nectr in under 5 minutes
+  </Card>
+  <Card
+    title="How It Works"
+    icon="gear"
+    href="/how-it-works"
+  >
+    Understand the architecture and PR review flow
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api/overview"
+  >
+    Explore the complete REST API documentation
+  </Card>
+  <Card
+    title="Self-Hosting Guide"
+    icon="server"
+    href="/developers/local-development"
+  >
+    Deploy Nectr on your own infrastructure
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="AI-Powered Reviews"
+    icon="brain"
+    href="/features/ai-analysis"
+  >
+    Claude Sonnet 4.6 analyzes every PR for bugs, security vulnerabilities, performance issues, and code style with intelligent, context-aware feedback.
+  </Card>
+  <Card
+    title="Knowledge Graph"
+    icon="diagram-project"
+    href="/features/knowledge-graph"
+  >
+    Neo4j tracks file ownership, developer expertise, and PR relationships to provide contextual insights and identify subject matter experts.
+  </Card>
+  <Card
+    title="Semantic Memory"
+    icon="brain-circuit"
+    href="/features/semantic-memory"
+  >
+    Mem0 remembers project patterns, coding standards, and individual developer habits to deliver increasingly personalized reviews over time.
+  </Card>
+  <Card
+    title="Live Context Integration"
+    icon="plug"
+    href="/integrations/overview"
+  >
+    MCP bidirectional integration pulls live data from Linear, Sentry, and Slack to ground every review in real production context.
+  </Card>
+</CardGroup>
+
+## What Makes Nectr Different
+
+<AccordionGroup>
+  <Accordion title="Contextual Intelligence">
+    Unlike traditional linters, Nectr understands your project's history. It knows who owns which files, what patterns you've established, and what decisions you've made — delivering reviews that get smarter with every PR.
+  </Accordion>
+
+  <Accordion title="Production-Aware Analysis">
+    Nectr doesn't just read code — it pulls production errors from Sentry, linked issues from Linear, and team discussions from Slack to provide reviews grounded in real-world impact.
+  </Accordion>
+
+  <Accordion title="Self-Hostable & Open Source">
+    Own your data and your API keys. Nectr is designed to be forked and self-hosted with full control over your infrastructure, making it ideal for teams with strict data sovereignty requirements.
+  </Accordion>
+
+  <Accordion title="Parallel Specialized Agents">
+    Enable parallel mode to run three specialized AI agents concurrently — one for security, one for performance, and one for style — with a synthesis agent combining their insights into a unified review.
+  </Accordion>
+</AccordionGroup>
+
+## How It Works
+
+When you open or update a pull request:
+
+<Steps>
+  <Step title="GitHub Webhook Triggers">
+    GitHub sends a webhook event to Nectr's FastAPI backend, which validates the signature and queues the review in the background.
+  </Step>
+
+  <Step title="Context Gathering">
+    Nectr pulls the PR diff, fetches related issues from Linear, production errors from Sentry, and team discussions from Slack to build comprehensive context.
+  </Step>
+
+  <Step title="Knowledge Graph Query">
+    Neo4j identifies file experts (developers who frequently touch the changed files) and related past PRs to inform the review.
+  </Step>
+
+  <Step title="AI Analysis">
+    Claude Sonnet 4.6 analyzes the code with full context, checking for security vulnerabilities, performance issues, bugs, and style violations.
+  </Step>
+
+  <Step title="Review Posted">
+    Nectr posts a structured review comment on GitHub with inline suggestions, a summary, and a clear verdict (APPROVE, REQUEST_CHANGES, or COMMENT).
+  </Step>
+
+  <Step title="Memory Storage">
+    Project patterns, decisions, and developer-specific habits are extracted and stored in Mem0 for future reviews.
+  </Step>
+</Steps>
+
+## Tech Stack
+
+<CardGroup cols={3}>
+  <Card title="FastAPI" icon="bolt">
+    High-performance Python backend with async support
+  </Card>
+  <Card title="Next.js 15" icon="react">
+    React 19 frontend with server components
+  </Card>
+  <Card title="Neo4j" icon="diagram-project">
+    Knowledge graph for file ownership and PR relationships
+  </Card>
+  <Card title="Mem0" icon="brain">
+    Semantic memory for project patterns and developer habits
+  </Card>
+  <Card title="Claude Sonnet 4.6" icon="robot">
+    State-of-the-art AI model for code analysis
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Relational database for users, repos, and reviews
+  </Card>
+</CardGroup>
+
+## Getting Started
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart Guide"
+    icon="play"
+    href="/quickstart"
+  >
+    Connect your first repository and get your first AI review in minutes
+  </Card>
+  <Card
+    title="Dashboard Overview"
+    icon="chart-line"
+    href="/dashboard/overview"
+  >
+    Explore team analytics, review history, and contributor metrics
+  </Card>
+</CardGroup>

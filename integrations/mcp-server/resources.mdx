@@ -1,0 +1,329 @@
+---
+title: "MCP Resources"
+description: "Understand MCP resources for streaming review data as JSON"
+---
+
+## Overview
+
+In addition to **tools** (callable functions), Nectr's MCP server exposes **resources** — URI-addressable data streams that external agents can subscribe to. Resources are useful for long-lived connections where clients want to pull data periodically without calling a tool.
+
+**Current Resources:**
+- `nectr://repos/{repo}/reviews` — Recent reviews for a repository serialized as JSON
+
+**Implementation:** `app/mcp/server.py:245`
+
+---
+
+## What is an MCP Resource?
+
+An **MCP resource** is a URI pattern that maps to a data stream. Unlike tools (which are called with arguments and return a response), resources are **subscribed to** and return a stream of data.
+
+**Analogy:**
+- **Tools** = REST API endpoints (`POST /api/reviews`)
+- **Resources** = WebSocket streams or Server-Sent Events (`GET /api/reviews/stream`)
+
+---
+
+## Available Resources
+
+### nectr://repos/{repo}/reviews
+
+Returns recent reviews for a repository as a JSON string.
+
+**URI Pattern:**
+```
+nectr://repos/<owner>/<repo>/reviews
+```
+
+**Example:**
+```
+nectr://repos/acme/backend/reviews
+```
+
+#### Parameters
+
+<ParamField path="repo" type="string" required>
+  Full repository name (e.g., `"acme/backend"`). Extracted from the URI path.
+</ParamField>
+
+#### Response
+
+Returns a **JSON string** (not a parsed object) containing an array of review objects:
+
+```json
+[
+  {
+    "id": 42,
+    "repo": "acme/backend",
+    "pr_number": 123,
+    "verdict": "APPROVE",
+    "summary": "Clean refactor, no issues found.",
+    "created_at": "2026-03-10T10:00:00Z",
+    "status": "completed"
+  },
+  {
+    "id": 41,
+    "repo": "acme/backend",
+    "pr_number": 122,
+    "verdict": "REQUEST_CHANGES",
+    "summary": "Found 2 potential issues...",
+    "created_at": "2026-03-09T15:30:00Z",
+    "status": "completed"
+  }
+]
+```
+
+#### Implementation
+
+**File:** `app/mcp/server.py:245`
+
+```python
+@mcp.resource("nectr://repos/{repo}/reviews")
+async def reviews_resource(repo: str) -> str:
+    """Recent reviews for a repository serialised as a JSON string.
+
+    URI pattern: ``nectr://repos/<owner>/<repo>/reviews``
+    """
+    reviews = await _query_db_reviews(repo, limit=20)
+    return json.dumps(reviews, indent=2, default=str)
+```
+
+**Helper:** `app/mcp/server.py:33`
+
+```python
+async def _query_db_reviews(repo: str, limit: int) -> list[dict]:
+    """Query recent PR-review workflow runs from the application database.
+
+    Returns an empty list (with a warning log) if the database is unreachable
+    or no matching rows exist, so callers can degrade gracefully.
+    """
+    try:
+        from app.core.database import async_session
+        from app.models.workflow import WorkflowRun
+        from sqlalchemy import select, desc
+
+        async with async_session() as db:
+            stmt = (
+                select(WorkflowRun)
+                .where(WorkflowRun.workflow_type == "pr_review")
+                .order_by(desc(WorkflowRun.created_at))
+                .limit(limit)
+            )
+            result = await db.execute(stmt)
+            rows = result.scalars().all()
+
+        reviews: list[dict] = []
+        for row in rows:
+            meta: dict = {}
+            if row.result_data:
+                try:
+                    meta = (
+                        json.loads(row.result_data)
+                        if isinstance(row.result_data, str)
+                        else row.result_data
+                    )
+                except (ValueError, TypeError):
+                    pass
+            reviews.append(
+                {
+                    "id": row.id,
+                    "repo": meta.get("repo", repo),
+                    "pr_number": meta.get("pr_number"),
+                    "verdict": meta.get("verdict", "UNKNOWN"),
+                    "summary": meta.get("summary", ""),
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "status": row.status,
+                }
+            )
+        return reviews
+    except Exception as exc:
+        logger.warning("MCP _query_db_reviews failed: %s", exc)
+        return []
+```
+
+---
+
+## Usage
+
+### Accessing Resources from Claude Desktop
+
+Claude Desktop automatically discovers MCP resources. Ask:
+
+> "Show me the reviews resource for acme/backend"
+
+Claude will call the resource URI and display the JSON response.
+
+### Accessing Resources via MCP Inspector
+
+```bash
+mcp-inspector http://localhost:8000/mcp/sse
+```
+
+List available resources:
+
+```bash
+> resources.list
+```
+
+**Output:**
+```json
+[
+  {
+    "uri": "nectr://repos/{repo}/reviews",
+    "name": "reviews_resource",
+    "description": "Recent reviews for a repository serialised as a JSON string."
+  }
+]
+```
+
+Read a resource:
+
+```bash
+> resources.read nectr://repos/acme/backend/reviews
+```
+
+**Output:**
+```json
+[
+  {
+    "id": 42,
+    "repo": "acme/backend",
+    "pr_number": 123,
+    "verdict": "APPROVE",
+    "summary": "Clean refactor, no issues found.",
+    "created_at": "2026-03-10T10:00:00Z",
+    "status": "completed"
+  }
+]
+```
+
+### Accessing Resources via HTTP (Custom Client)
+
+<Warning>
+**Note:** The MCP protocol does not directly expose resources via HTTP GET. You must use the JSON-RPC 2.0 `resources/read` method over the SSE transport.
+</Warning>
+
+**Correct approach:**
+
+```python
+import httpx
+import json
+
+async def read_nectr_resource(uri: str):
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "resources/read",
+        "params": {"uri": uri},
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8000/mcp/sse",
+            json=payload,
+        )
+        data = response.json()
+        # Unwrap MCP response: {"result": {"contents": [{"text": "..."}]}}
+        return data["result"]["contents"][0]["text"]
+
+# Example: Read reviews resource
+reviews_json = await read_nectr_resource("nectr://repos/acme/backend/reviews")
+reviews = json.loads(reviews_json)
+print(reviews)
+```
+
+---
+
+## Tools vs. Resources
+
+| Feature | Tools | Resources |
+|---------|-------|----------|
+| **Call pattern** | `tools/call` with arguments | `resources/read` with URI |
+| **Response format** | Parsed JSON (dict/list) | JSON string |
+| **Use case** | One-off queries ("get PR verdict") | Streaming data ("subscribe to reviews") |
+| **Caching** | No built-in caching | Can cache by URI |
+| **Example** | `get_recent_reviews(repo, limit)` | `nectr://repos/{repo}/reviews` |
+
+**When to use tools:**
+- You need to pass complex arguments
+- You want a parsed response
+- You're calling from an MCP client that doesn't support resources
+
+**When to use resources:**
+- You want to subscribe to a data stream
+- You need a stable URI for caching
+- You're building a dashboard that polls for updates
+
+---
+
+## Adding New Resources
+
+To add a new resource to Nectr's MCP server:
+
+<Steps>
+  <Step title="Define the resource in server.py">
+    ```python
+    @mcp.resource("nectr://repos/{repo}/contributors")
+    async def contributors_resource(repo: str) -> str:
+        """Top contributors for a repository as JSON."""
+        stats = await _query_contributor_stats(repo)
+        return json.dumps(stats, indent=2)
+    ```
+  </Step>
+  <Step title="Restart Nectr">
+    ```bash
+    docker compose restart backend
+    ```
+  </Step>
+  <Step title="Verify the resource is available">
+    ```bash
+    mcp-inspector http://localhost:8000/mcp/sse
+    > resources.list
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Error: Resource not found">
+    **Cause:** URI pattern does not match any registered resource.
+
+    **Fix:**
+    - Check URI format: `nectr://repos/{owner}/{repo}/reviews` (no trailing slash)
+    - Verify resource is registered in `app/mcp/server.py`
+    - Restart Nectr to reload resources
+  </Accordion>
+  <Accordion title="Empty response">
+    **Cause:** Database is empty or no reviews match the repo.
+
+    **Fix:**
+    - Run a review to populate the database
+    - Check logs: `docker logs nectr-backend`
+    - Verify `repo` format: `owner/repo` (not just `repo`)
+  </Accordion>
+  <Accordion title="JSON parse error">
+    **Cause:** Resource returns a JSON string, not a parsed object.
+
+    **Fix:**
+    - Wrap response in `json.loads(...)` if using a custom client
+    - MCP clients (Claude Desktop, MCP Inspector) parse automatically
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Tools Reference" icon="wrench" href="/integrations/mcp-server/tools">
+    Browse all available MCP tools
+  </Card>
+  <Card title="MCP Server Setup" icon="server" href="/integrations/mcp-server/setup">
+    Configure and deploy Nectr's MCP server
+  </Card>
+  <Card title="MCP Protocol" icon="network-wired" href="/integrations/mcp-protocol">
+    Understand how MCP works in Nectr
+  </Card>
+</CardGroup>

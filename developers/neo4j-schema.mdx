@@ -1,0 +1,432 @@
+---
+title: Neo4j Schema
+description: Graph database constraints and indexes for Nectr's knowledge graph
+---
+
+## Overview
+
+Nectr uses Neo4j to build a **knowledge graph** of repositories, PRs, developers, files, and issues.
+
+**Purpose:**
+
+- Find file experts (who committed most to this file?)
+- Find related PRs (what past PRs touched these files?)
+- Detect PR conflicts (which open PRs touch the same files?)
+- Track issue resolution (which PRs resolved this issue?)
+
+**Source:** `app/core/neo4j_schema.py:1`
+
+## Initialization
+
+**File:** `app/core/neo4j_schema.py:20`
+
+```python
+async def create_schema():
+    """Create all Neo4j constraints. Safe to call on every startup."""
+    if not is_available():
+        return
+
+    try:
+        async with get_session() as session:
+            for cypher in _CONSTRAINTS:
+                try:
+                    await session.run(cypher)
+                except Exception as e:
+                    # Older Neo4j versions may not support IF NOT EXISTS
+                    logger.debug(f"Constraint creation note: {e}")
+        logger.info("Neo4j schema ready")
+    except Exception as e:
+        logger.warning(f"Neo4j schema setup failed: {e}")
+```
+
+**Called from:** `app/main.py` on application startup:
+
+```python
+@app.on_event("startup")
+async def startup_event():
+    await create_schema()
+```
+
+## Constraints
+
+**File:** `app/core/neo4j_schema.py:11`
+
+```python
+_CONSTRAINTS = [
+    "CREATE CONSTRAINT repo_unique IF NOT EXISTS FOR (r:Repository) REQUIRE r.full_name IS UNIQUE",
+    "CREATE CONSTRAINT file_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.repo, f.path) IS NODE KEY",
+    "CREATE CONSTRAINT pr_unique IF NOT EXISTS FOR (p:PullRequest) REQUIRE (p.repo, p.number) IS NODE KEY",
+    "CREATE CONSTRAINT developer_unique IF NOT EXISTS FOR (d:Developer) REQUIRE d.login IS UNIQUE",
+    "CREATE CONSTRAINT issue_unique IF NOT EXISTS FOR (i:Issue) REQUIRE (i.repo, i.number) IS NODE KEY",
+]
+```
+
+### Repository
+
+```cypher
+CREATE CONSTRAINT repo_unique IF NOT EXISTS
+FOR (r:Repository)
+REQUIRE r.full_name IS UNIQUE
+```
+
+**Properties:**
+
+- `full_name` (unique) — `"owner/repo"`
+- `owner` — GitHub org/username
+- `repo` — Repository name
+- `created_at` — When first indexed
+
+**Example:**
+
+```cypher
+CREATE (r:Repository {full_name: "nectr/nectr", owner: "nectr", repo: "nectr", created_at: datetime()})
+```
+
+### File
+
+```cypher
+CREATE CONSTRAINT file_unique IF NOT EXISTS
+FOR (f:File)
+REQUIRE (f.repo, f.path) IS NODE KEY
+```
+
+**Properties:**
+
+- `repo` (composite key) — Repository full name
+- `path` (composite key) — Repo-relative file path (e.g., `"app/main.py"`)
+- `extension` — File extension (e.g., `"py"`)
+
+**Example:**
+
+```cypher
+CREATE (f:File {repo: "nectr/nectr", path: "app/services/ai_service.py", extension: "py"})
+```
+
+### PullRequest
+
+```cypher
+CREATE CONSTRAINT pr_unique IF NOT EXISTS
+FOR (p:PullRequest)
+REQUIRE (p.repo, p.number) IS NODE KEY
+```
+
+**Properties:**
+
+- `repo` (composite key) — Repository full name
+- `number` (composite key) — PR number
+- `title` — PR title
+- `verdict` — `"APPROVE"`, `"REQUEST_CHANGES"`, or `"NEEDS_DISCUSSION"`
+- `created_at` — When PR was opened
+- `indexed_at` — When indexed by Nectr
+
+**Example:**
+
+```cypher
+CREATE (p:PullRequest {
+  repo: "nectr/nectr",
+  number: 42,
+  title: "Add parallel review agents",
+  verdict: "APPROVE",
+  created_at: datetime("2024-01-15T10:30:00Z"),
+  indexed_at: datetime()
+})
+```
+
+### Developer
+
+```cypher
+CREATE CONSTRAINT developer_unique IF NOT EXISTS
+FOR (d:Developer)
+REQUIRE d.login IS UNIQUE
+```
+
+**Properties:**
+
+- `login` (unique) — GitHub username
+- `name` — Display name (optional)
+- `avatar_url` — Profile picture URL
+- `first_seen` — When first indexed
+
+**Example:**
+
+```cypher
+CREATE (d:Developer {login: "alice", name: "Alice Smith", avatar_url: "https://avatars.githubusercontent.com/u/123", first_seen: datetime()})
+```
+
+### Issue
+
+```cypher
+CREATE CONSTRAINT issue_unique IF NOT EXISTS
+FOR (i:Issue)
+REQUIRE (i.repo, i.number) IS NODE KEY
+```
+
+**Properties:**
+
+- `repo` (composite key) — Repository full name
+- `number` (composite key) — Issue number
+- `title` — Issue title
+- `state` — `"open"` or `"closed"`
+- `created_at` — When issue was created
+- `indexed_at` — When indexed by Nectr
+
+**Example:**
+
+```cypher
+CREATE (i:Issue {repo: "nectr/nectr", number: 123, title: "Bug in auth flow", state: "open", created_at: datetime("2024-01-10T08:00:00Z"), indexed_at: datetime()})
+```
+
+## Relationships
+
+### `(:Developer)-[:AUTHORED]->(:PullRequest)`
+
+**Created when:** PR is indexed
+
+```cypher
+MATCH (d:Developer {login: "alice"})
+MATCH (p:PullRequest {repo: "nectr/nectr", number: 42})
+MERGE (d)-[:AUTHORED]->(p)
+```
+
+### `(:PullRequest)-[:TOUCHES]->(:File)`
+
+**Created when:** PR is indexed
+
+**Properties:**
+
+- `additions` — Lines added to this file
+- `deletions` — Lines deleted from this file
+
+```cypher
+MATCH (p:PullRequest {repo: "nectr/nectr", number: 42})
+MATCH (f:File {repo: "nectr/nectr", path: "app/main.py"})
+MERGE (p)-[:TOUCHES {additions: 15, deletions: 3}]->(f)
+```
+
+### `(:PullRequest)-[:RESOLVES]->(:Issue)`
+
+**Created when:** PR mentions `Fixes #N` or AI detects semantic resolution
+
+**Properties:**
+
+- `confidence` — `"explicit"` (Fixes #N) or `"high"`/`"medium"` (AI-detected)
+
+```cypher
+MATCH (p:PullRequest {repo: "nectr/nectr", number: 42})
+MATCH (i:Issue {repo: "nectr/nectr", number: 123})
+MERGE (p)-[:RESOLVES {confidence: "explicit"}]->(i)
+```
+
+### `(:File)-[:BELONGS_TO]->(:Repository)`
+
+**Created when:** File is indexed
+
+```cypher
+MATCH (f:File {repo: "nectr/nectr", path: "app/main.py"})
+MATCH (r:Repository {full_name: "nectr/nectr"})
+MERGE (f)-[:BELONGS_TO]->(r)
+```
+
+## Query Patterns
+
+### Find File Experts
+
+**Use case:** Who should review this PR?
+
+**File:** `app/services/graph_builder.py` (typical implementation)
+
+```cypher
+MATCH (d:Developer)-[:AUTHORED]->(p:PullRequest)-[:TOUCHES]->(f:File)
+WHERE f.repo = $repo AND f.path IN $file_paths
+RETURN d.login, COUNT(DISTINCT p) AS touch_count
+ORDER BY touch_count DESC
+LIMIT 5
+```
+
+**Example:**
+
+```python
+file_experts = await graph_builder.get_file_experts("nectr/nectr", ["app/services/ai_service.py"], top_k=5)
+# Returns: [{'login': 'alice', 'touch_count': 12}, {'login': 'bob', 'touch_count': 5}, ...]
+```
+
+### Find Related PRs
+
+**Use case:** Show similar past work in review comment.
+
+```cypher
+MATCH (p:PullRequest)-[:TOUCHES]->(f:File)
+WHERE f.repo = $repo AND f.path IN $file_paths AND p.number <> $current_pr_number
+RETURN DISTINCT p.number, p.title, p.verdict, COUNT(f) AS overlap
+ORDER BY overlap DESC
+LIMIT 5
+```
+
+**Example:**
+
+```python
+related_prs = await graph_builder.get_related_prs("nectr/nectr", ["app/services/ai_service.py"], top_k=5)
+# Returns: [{'number': 38, 'title': 'Add tool-based review', 'verdict': 'APPROVE', 'overlap': 3}, ...]
+```
+
+### Find Open PR Conflicts
+
+**Use case:** Warn about merge conflicts.
+
+**File:** `app/services/pr_review_service.py:130`
+
+(This is done via GitHub API, not Neo4j, because we need real-time open PR status.)
+
+### Track Issue Resolution
+
+**Use case:** Which PRs resolved this issue?
+
+```cypher
+MATCH (i:Issue {repo: $repo, number: $issue_number})<-[:RESOLVES]-(p:PullRequest)
+RETURN p.number, p.title, p.verdict
+```
+
+## Indexing Flow
+
+**File:** `app/services/graph_builder.py` (typical implementation)
+
+```python
+async def index_pr(
+    repo_full_name: str,
+    pr_number: int,
+    title: str,
+    author: str,
+    files_changed: list[str],
+    verdict: str,
+    issue_numbers: list[int],
+):
+    async with get_session() as session:
+        # 1. Merge Repository node
+        await session.run(
+            "MERGE (r:Repository {full_name: $repo})",
+            repo=repo_full_name,
+        )
+
+        # 2. Merge Developer node
+        await session.run(
+            "MERGE (d:Developer {login: $author})",
+            author=author,
+        )
+
+        # 3. Merge PullRequest node
+        await session.run(
+            "MERGE (p:PullRequest {repo: $repo, number: $number}) "
+            "SET p.title = $title, p.verdict = $verdict, p.indexed_at = datetime()",
+            repo=repo_full_name, number=pr_number, title=title, verdict=verdict,
+        )
+
+        # 4. Create AUTHORED relationship
+        await session.run(
+            "MATCH (d:Developer {login: $author}) "
+            "MATCH (p:PullRequest {repo: $repo, number: $number}) "
+            "MERGE (d)-[:AUTHORED]->(p)",
+            author=author, repo=repo_full_name, number=pr_number,
+        )
+
+        # 5. Create File nodes + TOUCHES relationships
+        for file_path in files_changed:
+            await session.run(
+                "MERGE (f:File {repo: $repo, path: $path}) "
+                "MERGE (p:PullRequest {repo: $repo, number: $number}) "
+                "MERGE (p)-[:TOUCHES]->(f)",
+                repo=repo_full_name, path=file_path, number=pr_number,
+            )
+
+        # 6. Create Issue nodes + RESOLVES relationships
+        for issue_num in issue_numbers:
+            await session.run(
+                "MERGE (i:Issue {repo: $repo, number: $issue_num}) "
+                "MERGE (p:PullRequest {repo: $repo, number: $pr_num}) "
+                "MERGE (p)-[:RESOLVES {confidence: 'explicit'}]->(i)",
+                repo=repo_full_name, issue_num=issue_num, pr_num=pr_number,
+            )
+```
+
+**Called from:** `app/services/pr_review_service.py:770` after review is posted.
+
+## Performance Considerations
+
+1. **Constraints = indexes** — `UNIQUE` and `NODE KEY` constraints automatically create indexes
+2. **Batch writes** — Use `UNWIND` for bulk inserts:
+   ```cypher
+   UNWIND $files AS file
+   MERGE (f:File {repo: $repo, path: file})
+   ```
+3. **Avoid `OPTIONAL MATCH`** — Use `MATCH` with existence checks instead
+4. **Limit result sets** — Always use `LIMIT` in queries (default: 100)
+
+## Monitoring
+
+### Check Constraint Status
+
+```cypher
+SHOW CONSTRAINTS
+```
+
+**Expected output:**
+
+```
+repo_unique      | UNIQUENESS | Repository | full_name
+file_unique      | NODE_KEY   | File       | (repo, path)
+pr_unique        | NODE_KEY   | PullRequest| (repo, number)
+developer_unique | UNIQUENESS | Developer  | login
+issue_unique     | NODE_KEY   | Issue      | (repo, number)
+```
+
+### Check Node Counts
+
+```cypher
+MATCH (r:Repository) RETURN count(r) AS repos
+MATCH (p:PullRequest) RETURN count(p) AS prs
+MATCH (d:Developer) RETURN count(d) AS developers
+MATCH (f:File) RETURN count(f) AS files
+MATCH (i:Issue) RETURN count(i) AS issues
+```
+
+### Check Relationship Counts
+
+```cypher
+MATCH ()-[r:AUTHORED]->() RETURN count(r) AS authored
+MATCH ()-[r:TOUCHES]->() RETURN count(r) AS touches
+MATCH ()-[r:RESOLVES]->() RETURN count(r) AS resolves
+```
+
+## Troubleshooting
+
+### Constraint Already Exists
+
+**Error:** `Neo.ClientError.Schema.ConstraintAlreadyExists`
+
+**Solution:** Constraints are idempotent with `IF NOT EXISTS` (Neo4j 5.0+). For older versions, catch and ignore:
+
+```python
+try:
+    await session.run(constraint_cypher)
+except neo4j.exceptions.ClientError as e:
+    if "ConstraintAlreadyExists" in str(e):
+        pass  # OK, constraint exists
+    else:
+        raise
+```
+
+### Neo4j Connection Failed
+
+**Error:** `ServiceUnavailable: Could not connect to Neo4j`
+
+**Solution:** Check `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` in `.env`:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_password
+```
+
+## Next Steps
+
+- [Review Flow](/developers/architecture/review-flow) — How graph data is used in reviews
+- [Graph Builder](/developers/graph-builder) — Full graph indexing implementation

@@ -1,0 +1,227 @@
+---
+title: "Model Context Protocol (MCP)"
+description: "How Nectr uses MCP to connect with Linear, Sentry, Slack, and expose its own review data to external agents"
+---
+
+## What is MCP?
+
+The **Model Context Protocol** is an open standard for AI agents to pull structured data from external tools. Instead of hard-coding REST API calls for every service, Nectr uses MCP to connect with Linear, Sentry, Slack, and other tools via a single protocol.
+
+<Info>
+MCP was created by Anthropic and is designed for LLM-native workflows. Learn more at [modelcontextprotocol.io](https://modelcontextprotocol.io).
+</Info>
+
+## MCP in Nectr: Two Modes
+
+Nectr uses MCP in **both directions**:
+
+### 1. Inbound: Nectr as MCP Client
+
+During a PR review, Nectr calls external MCP servers to pull live context:
+
+- **Linear** → Linked issues and task descriptions
+- **Sentry** → Production errors for files in the PR diff
+- **Slack** → Relevant channel messages
+
+**Implementation:** `app/mcp/client.py` (`MCPClientManager`)
+
+### 2. Outbound: Nectr as MCP Server
+
+Nectr exposes its own review data via MCP so external agents can query:
+
+- Recent PR reviews and verdicts
+- Contributor stats from the knowledge graph
+- Repository health scores
+
+**Implementation:** `app/mcp/server.py` (FastMCP)
+
+---
+
+## Inbound MCP Client
+
+Nectr's AI reviewer uses `MCPClientManager` to fetch context from external MCP servers during the review workflow.
+
+### Supported Integrations
+
+<CardGroup cols={3}>
+  <Card title="Linear" icon="chart-line">
+    Pull issues by team and search query
+  </Card>
+  <Card title="Sentry" icon="bug">
+    Get errors filtered by project and filename
+  </Card>
+  <Card title="Slack" icon="slack">
+    Fetch channel messages (roadmap)
+  </Card>
+</CardGroup>
+
+### How It Works
+
+1. **Configure MCP server URL** in `.env`:
+   ```bash
+   LINEAR_MCP_URL=http://linear-mcp-server:8001
+   LINEAR_API_KEY=lin_api_...
+   ```
+
+2. **Nectr calls the MCP server** during review:
+   ```python
+   from app.mcp.client import mcp_client
+
+   issues = await mcp_client.get_linear_issues(
+       team_id="ENG",
+       query="authentication bug"
+   )
+   # Returns: [{id, title, state, url, description}, ...]
+   ```
+
+3. **Graceful degradation** — if the MCP server is not configured or fails:
+   ```python
+   # Returns [] with a warning log; review continues without that context
+   ```
+
+### Transport: HTTP + JSON-RPC 2.0
+
+Nectr sends MCP tool calls as JSON-RPC 2.0 requests over HTTP:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search_issues",
+    "arguments": {"team_id": "ENG", "query": "auth bug"}
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "result": {
+    "content": [
+      {"type": "text", "text": "[{\"id\": \"ENG-123\", \"title\": \"Fix OAuth flow\"}]"}
+    ]
+  }
+}
+```
+
+The client automatically unwraps the `content` array and parses JSON strings.
+
+---
+
+## Outbound MCP Server
+
+Nectr exposes its own review database via MCP so external tools (Linear bots, Claude Desktop, Slack apps) can query PR verdicts, contributor stats, and repo health.
+
+### Available Tools
+
+Nectr's MCP server exposes 4 tools:
+
+<CardGroup cols={2}>
+  <Card title="get_recent_reviews" icon="list">
+    Fetch recent PR reviews with verdicts and summaries
+  </Card>
+  <Card title="get_contributor_stats" icon="users">
+    Get top contributors with PR-touch counts
+  </Card>
+  <Card title="get_pr_verdict" icon="gavel">
+    Retrieve AI verdict for a specific PR
+  </Card>
+  <Card title="get_repo_health" icon="heart-pulse">
+    Calculate repository health score (0-100)
+  </Card>
+</CardGroup>
+
+### Transport: SSE (Server-Sent Events)
+
+Nectr's MCP server is mounted at `/mcp` using FastMCP with SSE transport:
+
+```bash
+curl -N http://localhost:8000/mcp/sse
+```
+
+**Connect from Claude Desktop:**
+```json
+{
+  "mcpServers": {
+    "nectr": {
+      "url": "http://localhost:8000/mcp/sse"
+    }
+  }
+}
+```
+
+### Example: Query Recent Reviews
+
+```python
+# External MCP client calls Nectr's server
+result = await mcp_client.call_tool(
+    "get_recent_reviews",
+    {"repo": "acme/backend", "limit": 10}
+)
+# Returns: [{id, repo, pr_number, verdict, summary, created_at, status}, ...]
+```
+
+---
+
+## Configuration
+
+### Inbound (Client) Setup
+
+Set environment variables for each external MCP server:
+
+```bash title=".env"
+# Linear issues
+LINEAR_MCP_URL=http://linear-mcp-server:8001
+LINEAR_API_KEY=lin_api_...
+
+# Sentry errors
+SENTRY_MCP_URL=http://sentry-mcp-server:8002
+SENTRY_AUTH_TOKEN=...
+
+# Slack messages
+SLACK_MCP_URL=http://slack-mcp-server:8003
+```
+
+### Outbound (Server) Setup
+
+No configuration needed — the MCP server is automatically mounted at `/mcp` when Nectr starts. See [MCP Server Setup](/integrations/mcp-server/setup) for details.
+
+---
+
+## Benefits of MCP
+
+<AccordionGroup>
+  <Accordion title="Single Protocol for All Tools">
+    Instead of writing custom REST API clients for Linear, Sentry, Slack, etc., Nectr uses one `query_mcp_server` method with tool name + arguments.
+  </Accordion>
+  <Accordion title="Graceful Degradation">
+    If an MCP server is offline or not configured, Nectr continues the review without that context. No crashes, no complex error handling.
+  </Accordion>
+  <Accordion title="Extensible">
+    Add new integrations by deploying a new MCP server and setting `*_MCP_URL`. No changes to Nectr's core review logic.
+  </Accordion>
+  <Accordion title="Agent-Native">
+    MCP is designed for LLM workflows. External agents (Claude Desktop, Custom GPTs) can call Nectr's MCP server directly.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup Linear" icon="chart-line" href="/integrations/linear">
+    Connect Linear issues to PR reviews
+  </Card>
+  <Card title="Setup Sentry" icon="bug" href="/integrations/sentry">
+    Surface production errors during reviews
+  </Card>
+  <Card title="Run MCP Server" icon="server" href="/integrations/mcp-server/setup">
+    Expose Nectr's data via MCP
+  </Card>
+  <Card title="MCP Tools Reference" icon="wrench" href="/integrations/mcp-server/tools">
+    Browse all available MCP tools
+  </Card>
+</CardGroup>

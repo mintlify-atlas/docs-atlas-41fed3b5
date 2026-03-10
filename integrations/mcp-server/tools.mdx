@@ -1,0 +1,496 @@
+---
+title: "MCP Tools Reference"
+description: "Complete reference for all MCP tools exposed by Nectr's server"
+---
+
+## Overview
+
+Nectr exposes **4 MCP tools** that external agents can call to fetch review data, contributor stats, and repository health metrics. Each tool is an async function decorated with `@mcp.tool()` in `app/mcp/server.py`.
+
+**Implementation:** `app/mcp/server.py:106-237`
+
+---
+
+## get_recent_reviews
+
+Fetch recent PR reviews for a repository with verdicts and summaries.
+
+### Parameters
+
+<ParamField path="repo" type="string" required>
+  Full repository name (e.g., `"acme/backend"`, `"owner/repo"`)
+</ParamField>
+
+<ParamField path="limit" type="integer" default={10}>
+  Maximum number of reviews to return. Capped at 50.
+</ParamField>
+
+### Response
+
+Returns a list of review objects:
+
+<ResponseField name="id" type="integer">
+  Database ID of the workflow run
+</ResponseField>
+
+<ResponseField name="repo" type="string">
+  Repository name (e.g., `"acme/backend"`)
+</ResponseField>
+
+<ResponseField name="pr_number" type="integer">
+  GitHub PR number
+</ResponseField>
+
+<ResponseField name="verdict" type="string">
+  AI verdict: `"APPROVE"`, `"REQUEST_CHANGES"`, `"COMMENT"`, or `"UNKNOWN"`
+</ResponseField>
+
+<ResponseField name="summary" type="string">
+  Review summary text (markdown)
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp (e.g., `"2026-03-10T10:00:00Z"`)
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Workflow status: `"completed"`, `"failed"`, or `"running"`
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```python Python
+from app.mcp.client import mcp_client
+
+reviews = await mcp_client.call_tool(
+    "get_recent_reviews",
+    {"repo": "acme/backend", "limit": 5}
+)
+print(reviews)
+```
+
+```bash cURL (via MCP JSON-RPC)
+curl -X POST http://localhost:8000/mcp/sse \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "get_recent_reviews",
+      "arguments": {"repo": "acme/backend", "limit": 5}
+    }
+  }'
+```
+
+```json Response
+[
+  {
+    "id": 42,
+    "repo": "acme/backend",
+    "pr_number": 123,
+    "verdict": "APPROVE",
+    "summary": "Clean refactor, no issues found.",
+    "created_at": "2026-03-10T10:00:00Z",
+    "status": "completed"
+  },
+  {
+    "id": 41,
+    "repo": "acme/backend",
+    "pr_number": 122,
+    "verdict": "REQUEST_CHANGES",
+    "summary": "Found 2 potential issues...",
+    "created_at": "2026-03-09T15:30:00Z",
+    "status": "completed"
+  }
+]
+```
+</CodeGroup>
+
+### Implementation
+
+**File:** `app/mcp/server.py:106`
+
+```python
+@mcp.tool()
+async def get_recent_reviews(repo: str, limit: int = 10) -> list[dict]:
+    """Get recent PR reviews for a repository with verdicts and summaries.
+
+    Args:
+        repo:  Full repository name, e.g. ``owner/repo``.
+        limit: Maximum number of reviews to return (default 10, capped at 50).
+
+    Returns:
+        List of review dicts:
+        ``{id, repo, pr_number, verdict, summary, created_at, status}``.
+    """
+    limit = min(max(1, limit), 50)
+    reviews = await _query_db_reviews(repo, limit)
+    if not reviews:
+        logger.info("MCP get_recent_reviews: no reviews found for %s", repo)
+    return reviews
+```
+
+---
+
+## get_contributor_stats
+
+Get top contributors for a repository with PR-touch counts from the Neo4j knowledge graph.
+
+### Parameters
+
+<ParamField path="repo" type="string" required>
+  Full repository name (e.g., `"acme/backend"`, `"owner/repo"`)
+</ParamField>
+
+### Response
+
+Returns a list of contributor objects:
+
+<ResponseField name="login" type="string">
+  GitHub username (e.g., `"alice"`)
+</ResponseField>
+
+<ResponseField name="pr_count" type="integer">
+  Number of PRs where this contributor touched files (from Neo4j graph)
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```python Python
+stats = await mcp_client.call_tool(
+    "get_contributor_stats",
+    {"repo": "acme/backend"}
+)
+print(stats)
+```
+
+```json Response
+[
+  {"login": "alice", "pr_count": 42},
+  {"login": "bob", "pr_count": 38},
+  {"login": "charlie", "pr_count": 27}
+]
+```
+</CodeGroup>
+
+### Implementation
+
+**File:** `app/mcp/server.py:125`
+
+```python
+@mcp.tool()
+async def get_contributor_stats(repo: str) -> list[dict]:
+    """Get top contributors for a repository with PR-touch counts.
+
+    Args:
+        repo: Full repository name, e.g. ``owner/repo``.
+
+    Returns:
+        List of contributor dicts: ``{login, pr_count}``.
+    """
+    return await _query_contributor_stats(repo)
+```
+
+**Helper:** `app/mcp/server.py:83`
+
+```python
+async def _query_contributor_stats(repo: str) -> list[dict]:
+    """Pull contributor stats from the Neo4j knowledge graph.
+
+    Falls back to an empty list if Neo4j is not configured or the query fails.
+    """
+    try:
+        from app.services import graph_builder
+
+        stats = await graph_builder.get_file_experts(repo, paths=[], top_k=20)
+        return [
+            {"login": s.get("login", ""), "pr_count": s.get("touch_count", 0)}
+            for s in (stats or [])
+        ]
+    except Exception as exc:
+        logger.warning("MCP _query_contributor_stats failed: %s", exc)
+        return []
+```
+
+<Info>
+**Requires Neo4j:** This tool returns `[]` if `NEO4J_URI` is not configured. Neo4j stores the knowledge graph built from historical PR diffs.
+</Info>
+
+---
+
+## get_pr_verdict
+
+Retrieve Nectr's AI verdict for a specific pull request.
+
+### Parameters
+
+<ParamField path="repo" type="string" required>
+  Full repository name (e.g., `"acme/backend"`)
+</ParamField>
+
+<ParamField path="pr_number" type="integer" required>
+  GitHub PR number
+</ParamField>
+
+### Response
+
+<ResponseField name="repo" type="string">
+  Repository name (echoed from input)
+</ResponseField>
+
+<ResponseField name="pr_number" type="integer">
+  PR number (echoed from input)
+</ResponseField>
+
+<ResponseField name="verdict" type="string">
+  AI verdict: `"APPROVE"`, `"REQUEST_CHANGES"`, `"COMMENT"`, or `"UNKNOWN"`
+</ResponseField>
+
+<ResponseField name="summary" type="string">
+  Review summary text (markdown)
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp
+</ResponseField>
+
+<ResponseField name="error" type="string" optional>
+  Error message if review not found (e.g., `"No review found for acme/backend#123"`)
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```python Python
+verdict = await mcp_client.call_tool(
+    "get_pr_verdict",
+    {"repo": "acme/backend", "pr_number": 123}
+)
+print(verdict)
+```
+
+```json Response (Success)
+{
+  "repo": "acme/backend",
+  "pr_number": 123,
+  "verdict": "APPROVE",
+  "summary": "Clean refactor, no issues found.",
+  "created_at": "2026-03-10T10:00:00Z"
+}
+```
+
+```json Response (Not Found)
+{
+  "error": "No review found for acme/backend#123"
+}
+```
+</CodeGroup>
+
+### Implementation
+
+**File:** `app/mcp/server.py:138`
+
+```python
+@mcp.tool()
+async def get_pr_verdict(repo: str, pr_number: int) -> dict:
+    """Get Nectr's AI verdict for a specific pull request.
+
+    Args:
+        repo:      Full repository name, e.g. ``owner/repo``.
+        pr_number: GitHub PR number.
+
+    Returns:
+        ``{repo, pr_number, verdict, summary, created_at}``
+        or ``{error}`` when the review is not found.
+    """
+    try:
+        from app.core.database import async_session
+        from app.models.workflow import WorkflowRun
+        from sqlalchemy import select, desc
+
+        async with async_session() as db:
+            stmt = (
+                select(WorkflowRun)
+                .where(WorkflowRun.workflow_type == "pr_review")
+                .order_by(desc(WorkflowRun.created_at))
+                .limit(100)
+            )
+            result = await db.execute(stmt)
+            rows = result.scalars().all()
+
+        repo_name = repo.split("/")[-1]
+        for row in rows:
+            meta: dict = {}
+            if row.result_data:
+                try:
+                    meta = (
+                        json.loads(row.result_data)
+                        if isinstance(row.result_data, str)
+                        else row.result_data
+                    )
+                except (ValueError, TypeError):
+                    pass
+            stored_repo = meta.get("repo", "")
+            if meta.get("pr_number") == pr_number and stored_repo.endswith(repo_name):
+                return {
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "verdict": meta.get("verdict", "UNKNOWN"),
+                    "summary": meta.get("summary", ""),
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+        return {"error": f"No review found for {repo}#{pr_number}"}
+    except Exception as exc:
+        logger.warning("MCP get_pr_verdict failed: %s", exc)
+        return {"error": str(exc)}
+```
+
+---
+
+## get_repo_health
+
+Calculate overall repository health score (0-100) based on review activity.
+
+### Parameters
+
+<ParamField path="repo" type="string" required>
+  Full repository name (e.g., `"acme/backend"`)
+</ParamField>
+
+### Response
+
+<ResponseField name="repo" type="string">
+  Repository name (echoed from input)
+</ResponseField>
+
+<ResponseField name="review_coverage_pct" type="integer">
+  Percentage of PRs reviewed (0-100)
+</ResponseField>
+
+<ResponseField name="avg_merge_time_hours" type="float" optional>
+  Average time from PR open to merge (hours). Currently `null` — requires merge-event tracking.
+</ResponseField>
+
+<ResponseField name="open_prs_indexed" type="integer">
+  Number of PRs reviewed and indexed
+</ResponseField>
+
+<ResponseField name="health_score" type="integer">
+  Overall health score (0-100). Calculated as `min(100, reviewed_count / 20 * 100)`.
+</ResponseField>
+
+<ResponseField name="note" type="string">
+  Informational note about missing features (e.g., `avg_merge_time_hours` not yet implemented)
+</ResponseField>
+
+<ResponseField name="error" type="string" optional>
+  Error message if database query fails
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```python Python
+health = await mcp_client.call_tool(
+    "get_repo_health",
+    {"repo": "acme/backend"}
+)
+print(health)
+```
+
+```json Response
+{
+  "repo": "acme/backend",
+  "review_coverage_pct": 85,
+  "avg_merge_time_hours": null,
+  "open_prs_indexed": 17,
+  "health_score": 85,
+  "note": "avg_merge_time_hours requires merge-event tracking (roadmap item)"
+}
+```
+</CodeGroup>
+
+### Implementation
+
+**File:** `app/mcp/server.py:192`
+
+```python
+@mcp.tool()
+async def get_repo_health(repo: str) -> dict:
+    """Get overall repository health metrics.
+
+    Derives a 0-100 health score from review activity, and reports review
+    coverage percentage and indexed PR count.
+
+    Args:
+        repo: Full repository name, e.g. ``owner/repo``.
+
+    Returns:
+        ``{repo, review_coverage_pct, avg_merge_time_hours,
+          open_prs_indexed, health_score, note}``.
+    """
+    try:
+        from app.core.database import async_session
+        from app.models.workflow import WorkflowRun
+        from sqlalchemy import select, func
+
+        async with async_session() as db:
+            stmt = select(func.count()).select_from(WorkflowRun).where(
+                WorkflowRun.workflow_type == "pr_review",
+                WorkflowRun.status == "completed",
+            )
+            result = await db.execute(stmt)
+            reviewed_count: int = result.scalar() or 0
+
+        health_score = min(100, int((reviewed_count / 20) * 100))
+        return {
+            "repo": repo,
+            "review_coverage_pct": min(100, reviewed_count * 5),
+            "avg_merge_time_hours": None,   # requires merge-event timestamp tracking
+            "open_prs_indexed": reviewed_count,
+            "health_score": health_score,
+            "note": "avg_merge_time_hours requires merge-event tracking (roadmap item)",
+        }
+    except Exception as exc:
+        logger.warning("MCP get_repo_health failed: %s", exc)
+        return {
+            "repo": repo,
+            "review_coverage_pct": 0,
+            "avg_merge_time_hours": None,
+            "open_prs_indexed": 0,
+            "health_score": 0,
+            "error": str(exc),
+        }
+```
+
+---
+
+## Error Handling
+
+All MCP tools follow **graceful degradation** principles:
+
+1. **Database unavailable** → Return empty list `[]` or error dict `{"error": "..."}`
+2. **Neo4j unavailable** → Return empty list `[]` (contributor stats)
+3. **No matching data** → Return empty list or error dict
+4. **Log warnings** → All exceptions are logged with `logger.warning(...)`
+
+**Never crashes** — external MCP clients can always call tools without worrying about 500 errors.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Resources" icon="database" href="/integrations/mcp-server/resources">
+    Learn about MCP resources for streaming data
+  </Card>
+  <Card title="MCP Server Setup" icon="server" href="/integrations/mcp-server/setup">
+    Configure and deploy Nectr's MCP server
+  </Card>
+  <Card title="MCP Protocol" icon="network-wired" href="/integrations/mcp-protocol">
+    Understand how MCP works in Nectr
+  </Card>
+</CardGroup>

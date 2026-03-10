@@ -1,0 +1,185 @@
+---
+title: 'Reviews'
+description: 'List and retrieve AI-powered pull request reviews'
+---
+
+## List Reviews
+
+Retrieve recent pull request reviews with optional filtering.
+
+<CodeGroup>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/reviews?limit=20&status=completed' \
+  --cookie 'access_token=<your_jwt>'
+```
+
+```javascript JavaScript
+fetch('http://localhost:8000/api/v1/reviews?limit=20', {
+  credentials: 'include'
+})
+  .then(res => res.json())
+  .then(reviews => console.log(reviews))
+```
+</CodeGroup>
+
+**Method**: `GET /api/v1/reviews`
+
+**Authentication**: Required
+
+### Query Parameters
+
+<ParamField query="limit" type="integer" default="20">
+  Maximum reviews to return (1-100)
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by review status: `pending`, `processing`, `completed`, `failed`
+</ParamField>
+
+<ParamField query="search" type="string">
+  Search by PR title, repository name, or PR number
+</ParamField>
+
+### Response
+
+Array of review objects:
+
+<ResponseField name="id" type="integer" required>
+  Event ID
+</ResponseField>
+
+<ResponseField name="event_type" type="string" required>
+  Event type (e.g., `"opened_pull_request"`, `"synchronize_pull_request"`)
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  Event source (always `"github"`)
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Review processing status: `pending`, `processing`, `completed`, `failed`
+</ResponseField>
+
+<ResponseField name="pr_status" type="string" required>
+  Pull request state (live from GitHub): `open`, `merged`, `closed`
+</ResponseField>
+
+<ResponseField name="created_at" type="string" required>
+  ISO 8601 timestamp when webhook was received
+</ResponseField>
+
+<ResponseField name="processed_at" type="string">
+  ISO 8601 timestamp when review completed
+</ResponseField>
+
+<ResponseField name="pr_title" type="string" required>
+  Pull request title
+</ResponseField>
+
+<ResponseField name="pr_number" type="integer" required>
+  Pull request number
+</ResponseField>
+
+<ResponseField name="repo_name" type="string" required>
+  Full repository name (e.g., `"octocat/nectr"`)
+</ResponseField>
+
+<ResponseField name="branch" type="string" required>
+  Head branch name
+</ResponseField>
+
+<ResponseField name="author" type="string" required>
+  GitHub username of PR author
+</ResponseField>
+
+<ResponseField name="pr_url" type="string" required>
+  GitHub pull request URL
+</ResponseField>
+
+<ResponseField name="ai_summary" type="string">
+  Full AI-generated review summary (only present for completed reviews)
+</ResponseField>
+
+<ResponseField name="files_analyzed" type="integer">
+  Number of files analyzed in the review
+</ResponseField>
+
+### Example Response
+
+```json
+[
+  {
+    "id": 123,
+    "event_type": "opened_pull_request",
+    "source": "github",
+    "status": "completed",
+    "pr_status": "open",
+    "created_at": "2025-03-10T14:30:00.000000",
+    "processed_at": "2025-03-10T14:32:15.000000",
+    "pr_title": "Add user authentication",
+    "pr_number": 42,
+    "repo_name": "octocat/nectr",
+    "branch": "feature/auth",
+    "author": "octocat",
+    "pr_url": "https://github.com/octocat/nectr/pull/42",
+    "ai_summary": "✅ **APPROVE**\n\nConfidence: 4/5\n\nThis PR implements user authentication with GitHub OAuth...",
+    "files_analyzed": 8
+  }
+]
+```
+
+### Deduplication
+
+Reviews are automatically deduplicated by PR number + repository. If multiple webhook events exist for the same PR (e.g., `opened` and `synchronize`), only the most recent event with the highest priority status is returned:
+
+**Priority**: `completed` > `failed` > `processing` > `pending`
+
+### Live PR Status
+
+The `pr_status` field is fetched live from GitHub on each request to ensure accuracy (e.g., a PR may have been merged after the review was created).
+
+---
+
+## Get Review Details
+
+Retrieve a single review with full AI summary.
+
+<RequestExample>
+```bash cURL
+curl -X GET 'http://localhost:8000/api/v1/reviews/123' \
+  --cookie 'access_token=<your_jwt>'
+```
+</RequestExample>
+
+**Method**: `GET /api/v1/reviews/{review_id}`
+
+**Authentication**: Required
+
+<ParamField path="review_id" type="integer" required>
+  Review event ID
+</ParamField>
+
+### Response
+
+Single review object (same structure as list endpoint).
+
+### Example Response
+
+```json
+{
+  "id": 123,
+  "event_type": "opened_pull_request",
+  "status": "completed",
+  "pr_status": "open",
+  "pr_title": "Add user authentication",
+  "pr_number": 42,
+  "repo_name": "octocat/nectr",
+  "author": "octocat",
+  "ai_summary": "✅ **APPROVE**\n\nConfidence: 4/5\n\n### Summary\n\nThis PR implements secure user authentication using GitHub OAuth 2.0 with JWT session management...",
+  "files_analyzed": 8
+}
+```
+
+### Error Responses
+
+- **404**: Review not found

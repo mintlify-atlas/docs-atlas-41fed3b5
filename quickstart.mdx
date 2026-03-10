@@ -1,80 +1,391 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart Guide'
+description: 'Get your first AI PR review in under 5 minutes'
 ---
 
-## Get started in three steps
+<Note>
+  This guide walks you through the complete setup from GitHub OAuth to getting your first automated PR review.
+</Note>
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- A GitHub account with access to at least one repository
+- Repository admin permissions (required to install webhooks)
+- A modern web browser
+
+## Step 1: Sign Up with GitHub OAuth
+
+Nectr uses GitHub OAuth for secure authentication and repository access.
+
+<Steps>
+  <Step title="Visit Nectr Dashboard">
+    Navigate to the Nectr web dashboard and click **Sign in with GitHub**.
+  </Step>
+
+  <Step title="Authorize Nectr">
+    You'll be redirected to GitHub's authorization page. Review the requested permissions:
+    - `repo` — Read and write access to code (required to post PR reviews)
+    - `read:user` — Read your GitHub profile
+    - `user:email` — Access your email address
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    Click **Authorize** to continue.
+  </Step>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Step title="Redirect to Dashboard">
+    After authorization, GitHub redirects you back to Nectr with an OAuth code. Nectr exchanges this for an access token, creates your user account, and sets an httpOnly JWT cookie.
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
+    You'll land on `/dashboard` — your PR review command center.
+  </Step>
+</Steps>
+
+<Info>
+  Your GitHub access token is encrypted using Fernet (AES-128-CBC) before storage. The JWT cookie is httpOnly, Secure (in production), and SameSite=None for cross-origin support.
+</Info>
+
+## Step 2: Connect Your First Repository
+
+Now that you're authenticated, connect a repository to enable automatic PR reviews.
+
+<Steps>
+  <Step title="Navigate to Code Providers">
+    Click **Repos** in the sidebar or navigate to `/repos`.
+    
+    You'll see all repositories your GitHub account has access to, grouped into:
+    - **Connected** — repositories with active Nectr webhooks
+    - **Available** — repositories you can connect
+  </Step>
+
+  <Step title="Connect a Repository">
+    Find the repository you want to enable AI reviews for and click **Connect**.
+    
+    This triggers the following actions:
+    ```python
+    # POST /api/v1/repos/{owner}/{repo}/install
+    
+    1. Install a GitHub webhook on the repository
+       - URL: https://your-backend.up.railway.app/api/v1/webhooks/github
+       - Events: pull_request (opened, synchronize, reopened)
+       - Secret: Per-repo HMAC-SHA256 secret for signature verification
+    
+    2. Build the Neo4j knowledge graph
+       - Fetch recursive file tree from GitHub
+       - Create Repository + File nodes
+       - Index ~200 files/batch (filtered: excludes node_modules, .git, dist, etc.)
+    
+    3. Save Installation record to PostgreSQL
+       - Links user → repo with webhook secret
+    ```
+  </Step>
+
+  <Step title="Wait for Graph Build">
+    The initial repository scan typically takes 5-15 seconds for small repos, up to 60 seconds for large monorepos.
+    
+    You'll see a success toast: `"Graph built — 1,234 files indexed into Neo4j."`
+  </Step>
+</Steps>
+
+<Warning>
+  If the repository is larger than 100,000 files, GitHub truncates the recursive tree. Nectr logs a warning and continues with the partial set.
+</Warning>
+
+## Step 3: Open a Pull Request
+
+With your repository connected, any new PR will trigger an automatic AI review.
+
+<Steps>
+  <Step title="Create a Branch & Make Changes">
+    ```bash
+    git checkout -b feature/add-user-auth
+    # Make your code changes
+    git add .
+    git commit -m "Add JWT authentication middleware"
+    git push origin feature/add-user-auth
+    ```
+  </Step>
+
+  <Step title="Open Pull Request on GitHub">
+    1. Go to your repository on GitHub
+    2. Click **Compare & pull request**
+    3. Add a title and description (mention issues with `Fixes #123`)
+    4. Click **Create pull request**
+  </Step>
+
+  <Step title="Nectr Review Triggers Automatically">
+    Within seconds of opening the PR, Nectr receives a webhook event:
+    
+    ```json
+    POST /api/v1/webhooks/github
+    {
+      "action": "opened",
+      "pull_request": {
+        "number": 42,
+        "title": "Add JWT authentication middleware",
+        "user": { "login": "yourname" },
+        "head": { "sha": "a1b2c3d" }
+      },
+      "repository": { "full_name": "org/repo" }
+    }
+    ```
+    
+    Nectr validates the HMAC-SHA256 signature, deduplicates the event (ignores duplicates within 1 hour), and spawns a background task.
+  </Step>
+</Steps>
+
+## Step 4: AI Analysis in Progress
+
+While you wait, here's what happens behind the scenes:
+
+<Accordion title="1. Fetch PR Data from GitHub" icon="github">
+  ```python
+  # app/services/pr_review_service.py:496-499
+  diff = await github_client.get_pr_diff(owner, repo, pr_number)
+  files = await github_client.get_pr_files(owner, repo, pr_number)
+  # Returns: unified diff + list of {filename, status, additions, deletions, patch}
+  ```
 </Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
+<Accordion title="2. Build Review Context (Parallel)" icon="database">
+  Nectr gathers contextual intelligence from multiple sources:
+  
+  ```python
+  # Executed in parallel via asyncio.gather()
+  
+  # Mem0 semantic memory
+  project_memories = await memory_adapter.search_relevant(
+      repo=repo_full_name,
+      query=f"{pr_title} {pr_description} {file_paths}",
+      top_k=12
+  )
+  developer_memories = await memory_adapter.search_relevant(
+      repo=repo_full_name,
+      query="Developer patterns, strengths, recurring issues",
+      developer=author,
+      top_k=5
+  )
+  
+  # Neo4j structural context
+  file_experts = await graph_builder.get_file_experts(
+      repo_full_name, file_paths, top_k=5
+  )
+  related_prs = await graph_builder.get_related_prs(
+      repo_full_name, file_paths, top_k=5
+  )
+  
+  # GitHub API
+  issue_details = await fetch_issue_details(owner, repo, issue_refs)
+  open_pr_conflicts = await get_open_pr_conflicts(owner, repo, pr_number, file_paths)
+  candidate_issues = await find_candidate_issues(owner, repo, pr_title, pr_body, file_paths)
+  ```
 </Accordion>
 
-## Next steps
+<Accordion title="3. Agentic AI Review" icon="sparkles">
+  Claude Sonnet 4.6 analyzes your PR with on-demand tool access:
+  
+  ```python
+  # 8 tools available during agentic loop:
+  REVIEW_TOOLS = [
+      "read_file",              # Fetch full file content from HEAD
+      "search_project_memory",  # Query Mem0 for project patterns
+      "search_developer_memory",# Query developer-specific memories
+      "get_file_history",       # Neo4j: file experts + related PRs
+      "get_issue_details",      # Fetch GitHub issue by number
+      "search_open_issues",     # Search open issues by keywords
+      "get_linked_issues",      # Fetch Linear/GitHub issues via MCP
+      "get_related_errors",     # Fetch Sentry errors for modified files
+  ]
+  
+  # Claude decides which tools to call based on the diff
+  review_result = await ai_service.analyze_pull_request_agentic(
+      pr, diff, files, tool_executor, issue_refs
+  )
+  ```
+  
+  The AI produces:
+  - **Summary**: High-level verdict with reasoning
+  - **Verdict**: `APPROVE`, `REQUEST_CHANGES`, or `NEEDS_DISCUSSION`
+  - **Inline Comments**: Line-specific suggestions with ````suggestion` blocks
+  - **Semantic Issue Matches**: Issues resolved without explicit `Fixes #N` mention
+</Accordion>
 
-Now that you have your docs running, explore these key features:
+<Accordion title="4. Post Review Comment" icon="message-square">
+  ```python
+  # app/services/pr_review_service.py:717
+  await github_client.post_pr_review(
+      owner, repo, pr_number,
+      commit_id=head_sha,
+      body=comment_body,
+      event="APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+      comments=inline_comments  # Line-specific suggestions
+  )
+  ```
+  
+  If the review API fails (e.g., no commit permissions), Nectr falls back to a flat issue comment.
+</Accordion>
+
+<Accordion title="5. Index PR in Neo4j" icon="git-branch">
+  ```cypher
+  MERGE (pr:PullRequest {repo: $repo, number: $number})
+  SET pr.title = $title, pr.author = $author, pr.verdict = $verdict
+  
+  MERGE (d:Developer {login: $author})
+  MERGE (pr)-[:AUTHORED_BY]->(d)
+  MERGE (d)-[:CONTRIBUTED_TO]->(r:Repository {full_name: $repo})
+  
+  UNWIND $files AS f
+  MERGE (file:File {repo: $repo, path: f.path})
+  MERGE (pr)-[:TOUCHES]->(file)
+  
+  UNWIND $issue_nums AS issue_num
+  MERGE (i:Issue {repo: $repo, number: issue_num})
+  MERGE (pr)-[:CLOSES]->(i)
+  ```
+</Accordion>
+
+<Accordion title="6. Extract Learned Memories" icon="brain">
+  After posting the review, Claude extracts new memories from the PR:
+  
+  ```python
+  # memory_extractor.py
+  extracted = await ai_service.extract_memories(
+      pr_title, file_changes, review_summary
+  )
+  # Returns: [
+  #   {type: "project_pattern", content: "Always use async/await for DB calls"},
+  #   {type: "decision", content: "Switched from JWT to session tokens"},
+  #   {type: "developer_strength", content: "@alice excels at SQL query optimization"},
+  #   ...
+  # ]
+  
+  for memory in extracted:
+      await memory_adapter.add_memory(
+          repo=repo_full_name,
+          content=memory.content,
+          memory_type=memory.type,
+          developer=author if memory.type.startswith("developer_") else None
+      )
+  ```
+</Accordion>
+
+## Step 5: Review the AI Feedback
+
+Navigate to your PR on GitHub — you'll see a new comment from Nectr:
+
+<img src="/images/pr-review-example.png" alt="Nectr PR Review Example" />
+
+The review includes:
 
 <CardGroup cols={2}>
+  <Card title="AI Summary" icon="file-text">
+    High-level verdict with reasoning:
+    - **Verdict**: APPROVE / REQUEST_CHANGES / NEEDS_DISCUSSION
+    - Key concerns (bugs, security, performance, style)
+    - Overall recommendation
+  </Card>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+  <Card title="Resolved Issues" icon="check-circle">
+    Lists GitHub issues closed by this PR:
+    - Auto-detected from `Fixes #123`, `Closes #456`
+    - Shows issue state (open/closed)
+  </Card>
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+  <Card title="Semantic Matches" icon="search">
+    Issues likely resolved without explicit mention:
+    - Claude analyzes open issues for keyword/semantic overlap
+    - Confidence: high (🟢) or medium (🟡)
+  </Card>
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Open PR Conflicts" icon="alert-triangle">
+    Other PRs touching the same files:
+    - Warns about potential merge conflicts
+    - Links to conflicting PRs with authors
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+### Inline Suggestions
+
+Nectr posts GitHub review comments with ````suggestion` blocks:
+
+```diff
+- const result = await db.query(sql);
++ const result = await db.query(sql).catch(err => {
++   logger.error('Query failed:', err);
++   throw new DatabaseError(err);
++ });
+```
+
+You can click **Commit suggestion** to apply the fix directly from GitHub.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Dashboard" icon="chart-line" href="/dashboard/overview">
+    View PR review history, verdict distribution, and team analytics
+  </Card>
+
+  <Card title="Knowledge Graph" icon="git-branch" href="/features/knowledge-graph">
+    Explore how Nectr tracks file experts and code ownership
+  </Card>
+
+  <Card title="Semantic Memory" icon="brain" href="/features/semantic-memory">
+    Learn how Nectr remembers project patterns and developer habits
+  </Card>
+
+  <Card title="AI Analysis" icon="sparkles" href="/features/ai-analysis">
+    Deep dive into the agentic review process and tool usage
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No review comment appeared on my PR">
+    Check the following:
+    
+    1. **Webhook installed?** Go to your repo → Settings → Webhooks. Verify the Nectr webhook exists and has a green checkmark for recent deliveries.
+    2. **Event status**: Navigate to `/reviews` in the Nectr dashboard. Find your PR — status should be `completed`. If `failed`, hover for error details.
+    3. **GitHub permissions**: Nectr requires a Personal Access Token (PAT) with `repo` scope to post reviews. Check Railway logs for `403 Forbidden` errors.
+    4. **Railway logs**: SSH into Railway container and run `docker logs <container_id>` to see detailed error traces.
+  </Accordion>
+
+  <Accordion title="Review posted but verdict is missing">
+    The AI verdict is extracted from the summary text via regex:
+    ```python
+    verdict_match = summary.match(/\*\*([A-Z_]+)\*\*/)
+    ```
+    
+    If the pattern doesn't match, the verdict won't display. This is a frontend parsing issue — the backend still recorded the correct verdict in the `workflow` table.
+  </Accordion>
+
+  <Accordion title="Graph build failed (0 files indexed)">
+    Common causes:
+    - **Empty repository**: GitHub returns 0 files for repos with no commits
+    - **Token lacks repo scope**: GitHub OAuth token must have `repo` access
+    - **API rate limit**: GitHub caps recursive tree fetches at 5,000/hour
+    
+    Solution: Click **Rescan** on the Repos page to retry. Check Railway logs for the root cause.
+  </Accordion>
+
+  <Accordion title="MCP integrations (Linear/Sentry) not working">
+    MCP integrations are **optional**. If you see warnings like:
+    ```
+    Linear integration not configured (set LINEAR_MCP_URL + LINEAR_API_KEY to enable)
+    ```
+    
+    This is expected if you haven't set those env vars. Nectr gracefully skips unavailable integrations.
+  </Accordion>
+</AccordionGroup>
+
+## What's Next?
+
+You've successfully:
+- ✅ Authenticated with GitHub OAuth
+- ✅ Connected a repository and built the knowledge graph
+- ✅ Received your first AI PR review
+
+Now explore advanced features:
+
+- **[PR Review Deep Dive](/features/pr-reviews)** — Understand the review workflow in detail
+- **[Team Analytics](/dashboard/analytics)** — Track team productivity and code quality
+- **[Custom Memories](/features/semantic-memory#custom-rules)** — Add project-specific rules for Nectr to enforce

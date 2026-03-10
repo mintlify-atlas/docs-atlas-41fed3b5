@@ -1,0 +1,434 @@
+---
+title: Deployment
+description: Deploy Nectr to Railway (backend) and Vercel (frontend)
+---
+
+## Overview
+
+Nectr is designed to be deployed with:
+- **Backend**: Railway (FastAPI + PostgreSQL)
+- **Frontend**: Vercel (Next.js)
+
+Both platforms offer free tiers that are sufficient for getting started.
+
+## Prerequisites
+
+- GitHub account
+- Railway account ([railway.app](https://railway.app))
+- Vercel account ([vercel.com](https://vercel.com))
+- Supabase account for PostgreSQL ([supabase.com](https://supabase.com))
+- Neo4j Aura account ([neo4j.com/cloud/aura](https://neo4j.com/cloud/aura))
+- Anthropic API key ([console.anthropic.com](https://console.anthropic.com))
+
+## Backend Deployment (Railway)
+
+<Steps>
+  <Step title="Create Railway project">
+    1. Go to [railway.app](https://railway.app) and sign in with GitHub
+    2. Click **New Project**
+    3. Select **Deploy from GitHub repo**
+    4. Choose your Nectr fork/repo
+  </Step>
+
+  <Step title="Configure build settings">
+    Railway auto-detects the Dockerfile. Verify these settings:
+
+    - **Root Directory**: `/` (repository root)
+    - **Dockerfile Path**: `Dockerfile`
+    - **Build Command**: (auto-detected from Dockerfile)
+    - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+    <Info>
+    Railway automatically injects the `$PORT` environment variable. The Dockerfile already handles this.
+    </Info>
+  </Step>
+
+  <Step title="Set up PostgreSQL">
+    Option 1: **Use Supabase (recommended)**
+
+    1. Go to [supabase.com](https://supabase.com) and create a new project
+    2. Navigate to **Project Settings** → **Database**
+    3. Copy the **Connection Pooling** string (Session Mode, port 5432)
+    4. Format for SQLAlchemy:
+       ```
+       postgresql+asyncpg://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+       ```
+
+    Option 2: **Use Railway PostgreSQL addon**
+
+    1. In your Railway project, click **New** → **Database** → **PostgreSQL**
+    2. Railway will automatically set `DATABASE_URL` in your environment
+  </Step>
+
+  <Step title="Set environment variables">
+    In Railway project settings → **Variables**, add all required environment variables from `.env.example`:
+
+    ```env
+    # AI
+    ANTHROPIC_API_KEY=sk-ant-...
+    ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+
+    # Database
+    DATABASE_URL=postgresql+asyncpg://...
+
+    # GitHub OAuth
+    GITHUB_CLIENT_ID=your_client_id
+    GITHUB_CLIENT_SECRET=your_client_secret
+    GITHUB_PAT=ghp_...
+
+    # Auth
+    SECRET_KEY=your_generated_secret_key
+
+    # Neo4j
+    NEO4J_URI=neo4j+s://xxxxx.databases.neo4j.io
+    NEO4J_USERNAME=neo4j
+    NEO4J_PASSWORD=your_neo4j_password
+
+    # Mem0
+    MEM0_API_KEY=m0-...
+
+    # URLs (set after first deploy)
+    BACKEND_URL=https://your-app.up.railway.app
+    FRONTEND_URL=https://your-app.vercel.app
+
+    # App settings
+    APP_ENV=production
+    LOG_LEVEL=INFO
+    DEBUG=False
+    ```
+
+    <Warning>
+    Generate a secure `SECRET_KEY`:
+    ```bash
+    python -c "import secrets; print(secrets.token_hex(32))"
+    ```
+    This key is used for JWT signing and token encryption. Never reuse keys between environments.
+    </Warning>
+  </Step>
+
+  <Step title="Configure GitHub OAuth">
+    1. Go to [github.com/settings/developers](https://github.com/settings/developers)
+    2. Create a new OAuth App (or update existing)
+    3. Set **Authorization callback URL** to:
+       ```
+       https://your-app.up.railway.app/auth/github/callback
+       ```
+    4. Copy Client ID and Secret to Railway environment variables
+  </Step>
+
+  <Step title="Deploy">
+    Railway will automatically deploy on every push to your main branch.
+
+    Monitor the deployment:
+    - Click on your service in Railway dashboard
+    - View **Deployments** tab for build logs
+    - Check **Logs** tab for runtime logs
+  </Step>
+
+  <Step title="Verify deployment">
+    Test the health endpoint:
+    ```bash
+    curl https://your-app.up.railway.app/health
+    ```
+
+    Expected response:
+    ```json
+    {
+      "status": "healthy",
+      "service": "Nectr",
+      "database": "healthy",
+      "neo4j": "healthy"
+    }
+    ```
+  </Step>
+</Steps>
+
+## Frontend Deployment (Vercel)
+
+<Steps>
+  <Step title="Create Vercel project">
+    1. Go to [vercel.com](https://vercel.com) and sign in with GitHub
+    2. Click **Add New** → **Project**
+    3. Import your Nectr repository
+  </Step>
+
+  <Step title="Configure build settings">
+    Set the following in Vercel project settings:
+
+    - **Framework Preset**: Next.js
+    - **Root Directory**: `nectr-web`
+    - **Build Command**: `npm run build` (auto-detected)
+    - **Output Directory**: `.next` (auto-detected)
+    - **Install Command**: `npm install` (auto-detected)
+  </Step>
+
+  <Step title="Set environment variables">
+    In Vercel project settings → **Environment Variables**, add:
+
+    ```env
+    NEXT_PUBLIC_API_URL=https://your-app.up.railway.app
+    ```
+
+    <Info>
+    `NEXT_PUBLIC_*` variables are embedded in the browser bundle at build time. Only set public, non-sensitive values.
+    </Info>
+  </Step>
+
+  <Step title="Deploy">
+    Click **Deploy**. Vercel will:
+    1. Clone your repository
+    2. Install dependencies (`npm install` in `nectr-web/`)
+    3. Build the Next.js app (`npm run build`)
+    4. Deploy to edge network
+  </Step>
+
+  <Step title="Update backend URLs">
+    After Vercel deployment completes:
+
+    1. Copy your Vercel deployment URL (e.g., `https://your-app.vercel.app`)
+    2. Go back to Railway project settings → **Variables**
+    3. Update `FRONTEND_URL` to your Vercel URL
+    4. Railway will automatically redeploy with the new variable
+  </Step>
+
+  <Step title="Update GitHub OAuth callback">
+    Update your GitHub OAuth App callback URL to include the production frontend:
+
+    1. Go to [github.com/settings/developers](https://github.com/settings/developers)
+    2. Edit your OAuth App
+    3. Ensure callback URL is still:
+       ```
+       https://your-app.up.railway.app/auth/github/callback
+       ```
+  </Step>
+
+  <Step title="Verify deployment">
+    1. Navigate to your Vercel URL
+    2. Click **Sign in with GitHub**
+    3. Complete OAuth flow
+    4. Verify you land on the dashboard
+  </Step>
+</Steps>
+
+## Database Setup
+
+### PostgreSQL (Supabase)
+
+<Steps>
+  <Step title="Create Supabase project">
+    1. Go to [supabase.com](https://supabase.com)
+    2. Click **New Project**
+    3. Choose a region close to your Railway deployment
+    4. Set a strong database password
+  </Step>
+
+  <Step title="Get connection string">
+    1. Navigate to **Project Settings** → **Database**
+    2. Scroll to **Connection Pooling**
+    3. Select **Session mode**
+    4. Copy the connection string
+  </Step>
+
+  <Step title="Format for SQLAlchemy">
+    Convert the Supabase connection string to SQLAlchemy format:
+
+    ```
+    postgresql+asyncpg://postgres.[project-id]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres
+    ```
+
+    Set this as `DATABASE_URL` in Railway.
+  </Step>
+</Steps>
+
+### Neo4j (Aura)
+
+<Steps>
+  <Step title="Create Neo4j Aura instance">
+    1. Go to [neo4j.com/cloud/aura](https://neo4j.com/cloud/aura)
+    2. Click **Create database** → **Free instance**
+    3. Wait for provisioning (2-3 minutes)
+  </Step>
+
+  <Step title="Get connection details">
+    1. Download the credentials file (shown once after creation)
+    2. Or navigate to instance → **Connect** → **URI, Username, Password**
+    3. Copy:
+       - `NEO4J_URI` (e.g., `neo4j+s://xxxxx.databases.neo4j.io`)
+       - `NEO4J_USERNAME` (usually `neo4j`)
+       - `NEO4J_PASSWORD`
+  </Step>
+
+  <Step title="Whitelist Railway IP">
+    Neo4j Aura requires IP whitelisting:
+
+    1. In Neo4j console, go to **Security** → **Allowed IPs**
+    2. Add `0.0.0.0/0` (allow all) for Railway
+
+    <Warning>
+    For better security, use Railway's static IPs (requires paid plan) and whitelist only those.
+    </Warning>
+  </Step>
+</Steps>
+
+## Automatic Migrations
+
+<Info>
+Alembic migrations run automatically on backend startup. No manual intervention needed.
+</Info>
+
+The startup sequence (see `app/main.py:88-117`):
+
+1. Run Alembic migrations (`alembic upgrade head`)
+2. Create any missing tables (belt-and-suspenders)
+3. Initialize Neo4j schema (constraints and indexes)
+4. Scan connected repos not yet indexed in Neo4j
+
+## Continuous Deployment
+
+Both Railway and Vercel support automatic deployments:
+
+- **Railway**: Auto-deploys on every push to `main` branch
+- **Vercel**: Auto-deploys on every push to `main` branch
+
+### Branch Previews
+
+**Vercel** creates preview deployments for every PR. Railway can be configured for preview environments (paid plan).
+
+## Monitoring
+
+### Railway
+
+- **Logs**: Real-time logs in Railway dashboard → Logs tab
+- **Metrics**: CPU, memory, network usage in Metrics tab
+- **Health checks**: Railway monitors your `/health` endpoint
+
+### Vercel
+
+- **Deployments**: View build logs and deployment history
+- **Analytics**: Enable Vercel Analytics for performance monitoring
+- **Logs**: Runtime logs in Vercel dashboard → Logs tab
+
+### Custom Health Checks
+
+Set up external monitoring (e.g., UptimeRobot, Better Uptime) to ping:
+
+```
+https://your-app.up.railway.app/health
+```
+
+## Rollback
+
+### Railway
+
+1. Go to **Deployments** tab
+2. Find the previous working deployment
+3. Click **⋯** → **Redeploy**
+
+### Vercel
+
+1. Go to **Deployments** tab
+2. Find the previous working deployment
+3. Click **⋯** → **Promote to Production**
+
+## Environment-Specific Configuration
+
+### Production Settings
+
+Recommended settings for production:
+
+```env
+APP_ENV=production
+DEBUG=False
+LOG_LEVEL=INFO
+```
+
+### Feature Flags
+
+```env
+# Enable parallel review agents (3 specialized agents run concurrently)
+PARALLEL_REVIEW_AGENTS=false  # Set to true for more thorough reviews (higher token usage)
+```
+
+See [Parallel Agents](/developers/parallel-agents) for details.
+
+## Scaling
+
+### Railway
+
+- **Horizontal scaling**: Add more replicas in Railway settings
+- **Vertical scaling**: Upgrade to larger instance size
+- **Database connection pooling**: Supabase handles this automatically
+
+### Vercel
+
+- **Automatic scaling**: Vercel scales based on traffic
+- **Edge network**: Global CDN for frontend assets
+- **ISR**: Configure `revalidate` in Next.js pages for Incremental Static Regeneration
+
+## Security Checklist
+
+<Check>
+  - [ ] Use strong, unique `SECRET_KEY` (32+ bytes, generated with `secrets.token_hex(32)`)
+  - [ ] Set `DEBUG=False` in production
+  - [ ] Use Supabase connection pooling (Session mode)
+  - [ ] Whitelist only necessary IPs in Neo4j Aura
+  - [ ] Rotate `GITHUB_PAT` periodically
+  - [ ] Set `APP_ENV=production`
+  - [ ] Enable HTTPS (Railway and Vercel handle this automatically)
+  - [ ] Review CORS settings in `app/main.py` (lines 143-157)
+</Check>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Railway build fails">
+    - Check Railway build logs for specific error
+    - Verify `requirements.txt` has all dependencies
+    - Ensure Dockerfile is in repository root
+    - Check that Python 3.14 is available (Railway supports 3.10+)
+  </Accordion>
+
+  <Accordion title="Database migrations fail">
+    - Check `DATABASE_URL` format (must start with `postgresql+asyncpg://`)
+    - Verify database is accessible from Railway
+    - Check Railway logs for Alembic error messages
+    - Manually run migrations: `alembic upgrade head` in Railway shell
+  </Accordion>
+
+  <Accordion title="OAuth redirect fails">
+    - Verify GitHub OAuth callback URL matches Railway URL
+    - Check `BACKEND_URL` and `FRONTEND_URL` in Railway environment
+    - Ensure `FRONTEND_URL` is in CORS allowed origins (see `app/main.py:143-157`)
+  </Accordion>
+
+  <Accordion title="Neo4j connection timeout">
+    - Check Neo4j Aura IP whitelist includes `0.0.0.0/0`
+    - Verify `NEO4J_URI` uses `neo4j+s://` protocol (not `bolt://`)
+    - Check Neo4j Aura instance is running
+    - Test connection from Railway shell: `pip install neo4j && python -c 'from neo4j import GraphDatabase; ...'`
+  </Accordion>
+
+  <Accordion title="Vercel build fails">
+    - Check Vercel build logs
+    - Verify Root Directory is set to `nectr-web`
+    - Ensure `package.json` has `build` script
+    - Check Node.js version (needs 20+)
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="gear" href="/developers/environment-variables">
+    Complete reference for all configuration options
+  </Card>
+  <Card title="Webhook Setup" icon="webhook" href="/developers/webhook-setup">
+    Configure GitHub webhooks for PR reviews
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/dashboard/analytics">
+    Track PR review metrics
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/developers/architecture/overview">
+    Understand the deployment architecture
+  </Card>
+</CardGroup>

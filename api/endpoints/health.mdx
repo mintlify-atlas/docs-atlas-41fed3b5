@@ -1,0 +1,84 @@
+---
+title: 'Health Check'
+description: 'Monitor service health and dependencies'
+---
+
+## Get Health Status
+
+<CodeGroup>
+```bash cURL
+curl -X GET 'http://localhost:8000/health'
+```
+
+```javascript JavaScript
+fetch('http://localhost:8000/health')
+  .then(res => res.json())
+  .then(data => console.log(data))
+```
+
+```python Python
+import httpx
+
+response = httpx.get('http://localhost:8000/health')
+print(response.json())
+```
+</CodeGroup>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Overall service status. Always `"healthy"` if the server is responding.
+</ResponseField>
+
+<ResponseField name="service" type="string" required>
+  Service name ("Nectr").
+</ResponseField>
+
+<ResponseField name="version" type="string" required>
+  Current API version (e.g., `"0.2.0"`).
+</ResponseField>
+
+<ResponseField name="environment" type="string" required>
+  Deployment environment (`"development"` or `"production"`).
+</ResponseField>
+
+<ResponseField name="uptime_seconds" type="number" required>
+  Seconds since server started.
+</ResponseField>
+
+<ResponseField name="database" type="string" required>
+  PostgreSQL connection status: `"healthy"` or `"unhealthy: <error>"`.
+</ResponseField>
+
+<ResponseField name="neo4j" type="string" required>
+  Neo4j graph database status:
+  - `"healthy"`: Connected and operational
+  - `"not configured"`: Neo4j credentials not provided
+  - `"unhealthy: <error>"`: Connection failed
+</ResponseField>
+
+### Example Response
+
+```json
+{
+  "status": "healthy",
+  "service": "Nectr",
+  "version": "0.2.0",
+  "environment": "development",
+  "uptime_seconds": 3847.2,
+  "database": "healthy",
+  "neo4j": "healthy"
+}
+```
+
+### Use Cases
+
+- **Health probes**: Use for Kubernetes liveness/readiness checks
+- **Monitoring**: Track uptime and dependency health
+- **Debugging**: Verify database and Neo4j connectivity
+
+### Notes
+
+- This endpoint does **not** require authentication
+- Returns 200 OK even if dependencies are unhealthy (check individual status fields)
+- Uptime resets on server restart

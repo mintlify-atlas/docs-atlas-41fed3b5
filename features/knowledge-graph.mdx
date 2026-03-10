@@ -1,0 +1,689 @@
+---
+title: 'Knowledge Graph'
+description: 'Neo4j-powered code intelligence: file experts, ownership tracking, and structural relationships'
+---
+
+## Overview
+
+Nectr builds a **Neo4j knowledge graph** of your codebase to track:
+
+- **Code ownership**: Who has domain expertise in which files
+- **File relationships**: Which files are frequently changed together
+- **PR history**: Past reviews, verdicts, and closed issues
+- **Team contributions**: Developer activity patterns
+
+<img src="/images/neo4j-graph.png" alt="Neo4j Knowledge Graph" />
+
+## Graph Schema
+
+### Nodes
+
+<CardGroup cols={3}>
+  <Card title="Repository" icon="git-branch">
+    ```cypher
+    (r:Repository {
+      full_name: "org/repo",
+      scanned_at: "2024-03-10T14:32:11Z"
+    })
+    ```
+  </Card>
+
+  <Card title="File" icon="file-code">
+    ```cypher
+    (f:File {
+      repo: "org/repo",
+      path: "src/auth/middleware.py",
+      language: "Python",
+      size: 2048
+    })
+    ```
+  </Card>
+
+  <Card title="PullRequest" icon="git-pull-request">
+    ```cypher
+    (pr:PullRequest {
+      repo: "org/repo",
+      number: 42,
+      title: "Add JWT auth",
+      author: "alice",
+      verdict: "APPROVE",
+      reviewed_at: "2024-03-10..."
+    })
+    ```
+  </Card>
+
+  <Card title="Developer" icon="user">
+    ```cypher
+    (d:Developer {
+      login: "alice"
+    })
+    ```
+  </Card>
+
+  <Card title="Issue" icon="bug">
+    ```cypher
+    (i:Issue {
+      repo: "org/repo",
+      number: 123
+    })
+    ```
+  </Card>
+</CardGroup>
+
+### Relationships
+
+```cypher
+// Repository structure
+(Repository)-[:CONTAINS]->(File)
+
+// PR activity
+(PullRequest)-[:TOUCHES]->(File)
+(PullRequest)-[:AUTHORED_BY]->(Developer)
+(PullRequest)-[:CLOSES]->(Issue)
+
+// Team contributions
+(Developer)-[:CONTRIBUTED_TO]->(Repository)
+```
+
+**Full schema example**:
+
+```cypher
+(Repository:"org/repo")-[:CONTAINS]->(File:"src/auth/middleware.py")
+(PullRequest:42)-[:TOUCHES]->(File:"src/auth/middleware.py")
+(PullRequest:42)-[:AUTHORED_BY]->(Developer:"alice")
+(PullRequest:42)-[:CLOSES]->(Issue:123)
+(Developer:"alice")-[:CONTRIBUTED_TO]->(Repository:"org/repo")
+```
+
+## Graph Build Process
+
+### Initial Scan (On Repo Connect)
+
+When you connect a repository, Nectr scans the entire file tree:
+
+```python
+# app/services/graph_builder.py:93-194
+async def build_repo_graph(
+    owner: str,
+    repo: str,
+    access_token: str,
+    raise_on_error: bool = False
+) -> int:
+    # 1. Fetch recursive file tree from GitHub
+    blobs = await _fetch_file_tree(owner, repo, access_token)
+    # GitHub API: GET /repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1
+    
+    # 2. Filter out ignored directories
+    SKIP_DIRS = {"node_modules", ".git", "dist", "build", "__pycache__", ".next", "vendor"}
+    filtered = [
+        b for b in blobs
+        if not any(part in SKIP_DIRS for part in b["path"].split("/"))
+    ]
+    
+    # 3. Upsert Repository node
+    await session.run(
+        """
+        MERGE (r:Repository {full_name: $full_name})
+        SET r.scanned_at = $now
+        """,
+        full_name=f"{owner}/{repo}",
+        now=datetime.now(timezone.utc).isoformat(),
+    )
+    
+    # 4. Batch-upsert File nodes (200 per batch)
+    CHUNK = 200
+    for i in range(0, len(filtered), CHUNK):
+        chunk = filtered[i : i + CHUNK]
+        files_data = [
+            {
+                "path": b["path"],
+                "language": _lang_from_path(b["path"]),  # Infer from extension
+                "size": b.get("size", 0),
+            }
+            for b in chunk
+        ]
+        await session.run(
+            """
+            UNWIND $files AS f
+            MERGE (file:File {repo: $repo, path: f.path})
+            SET file.language = f.language, file.size = f.size
+            WITH file
+            MERGE (r:Repository {full_name: $repo})
+            MERGE (r)-[:CONTAINS]->(file)
+            """,
+            repo=f"{owner}/{repo}",
+            files=files_data,
+        )
+    
+    # 5. Remove stale File nodes (deleted since last scan)
+    current_paths = [b["path"] for b in filtered]
+    await session.run(
+        """
+        MATCH (r:Repository {full_name: $repo})-[:CONTAINS]->(f:File)
+        WHERE NOT f.path IN $paths
+        DETACH DELETE f
+        """,
+        repo=f"{owner}/{repo}",
+        paths=current_paths,
+    )
+    
+    return len(filtered)
+```
+
+<Info>
+  **Language detection** is based on file extensions:
+  ```python
+  _EXT_LANG = {
+      "py": "Python", "js": "JavaScript", "ts": "TypeScript",
+      "java": "Java", "go": "Go", "rb": "Ruby", "rs": "Rust",
+      # ... 20+ languages
+  }
+  ```
+</Info>
+
+<Warning>
+  GitHub truncates recursive tree fetches at **100,000 nodes**. For massive monorepos, Nectr logs a warning and continues with the partial set:
+  ```
+  org/repo tree was truncated by GitHub (>100k nodes). Only partial file set will be indexed.
+  ```
+</Warning>
+
+### Rescan (Manual Trigger)
+
+Click **Rescan** on the Repos page to rebuild the graph:
+
+```python
+# POST /api/v1/repos/{owner}/{repo}/rescan
+@router.post("/{owner}/{repo}/rescan")
+async def rescan_repo(owner: str, repo: str, current_user: User = Depends(get_current_user)):
+    files_indexed = await graph_builder.build_repo_graph(
+        owner, repo,
+        access_token=decrypt_token(current_user.github_access_token),
+        raise_on_error=True  # Surface errors to the API response
+    )
+    return {"files_indexed": files_indexed}
+```
+
+**When to rescan**:
+- After major refactoring (files moved/deleted)
+- Graph queries return stale data
+- Initial scan failed (e.g., GitHub API timeout)
+
+### PR Indexing (Automatic)
+
+After every PR review, Nectr updates the graph:
+
+```python
+# app/services/graph_builder.py:197-288
+async def index_pr(
+    repo_full_name: str,
+    pr_number: int,
+    title: str,
+    author: str,
+    files_changed: list[str],
+    verdict: str,
+    issue_numbers: list[int] | None = None,
+) -> None:
+    # 1. Upsert PullRequest node
+    await session.run(
+        """
+        MERGE (pr:PullRequest {repo: $repo, number: $number})
+        SET pr.title = $title,
+            pr.author = $author,
+            pr.verdict = $verdict,
+            pr.reviewed_at = $now
+        """,
+        repo=repo_full_name,
+        number=pr_number,
+        title=title,
+        author=author,
+        verdict=verdict,
+        now=datetime.now(timezone.utc).isoformat(),
+    )
+    
+    # 2. Link to Developer
+    await session.run(
+        """
+        MERGE (d:Developer {login: $login})
+        WITH d
+        MATCH (pr:PullRequest {repo: $repo, number: $number})
+        MERGE (pr)-[:AUTHORED_BY]->(d)
+        WITH d
+        MERGE (r:Repository {full_name: $repo})
+        MERGE (d)-[:CONTRIBUTED_TO]->(r)
+        """,
+        login=author,
+        repo=repo_full_name,
+        number=pr_number,
+    )
+    
+    # 3. Link to changed Files
+    files_data = [{"path": p, "language": _lang_from_path(p)} for p in files_changed]
+    await session.run(
+        """
+        UNWIND $files AS f
+        MATCH (pr:PullRequest {repo: $repo, number: $number})
+        MERGE (file:File {repo: $repo, path: f.path})
+        ON CREATE SET file.language = f.language
+        MERGE (pr)-[:TOUCHES]->(file)
+        """,
+        repo=repo_full_name,
+        number=pr_number,
+        files=files_data,
+    )
+    
+    # 4. Link to closed Issues
+    if issue_numbers:
+        await session.run(
+            """
+            UNWIND $issue_nums AS issue_num
+            MERGE (i:Issue {repo: $repo, number: issue_num})
+            WITH i, issue_num
+            MATCH (pr:PullRequest {repo: $repo, number: $pr_num})
+            MERGE (pr)-[:CLOSES]->(i)
+            """,
+            repo=repo_full_name,
+            issue_nums=issue_numbers,
+            pr_num=pr_number,
+        )
+```
+
+<Tip>
+  **File nodes are created lazily** during PR indexing if they don't exist yet (e.g., new files added in the PR before the next full rescan).
+</Tip>
+
+## Query Operations
+
+The graph powers contextual intelligence during PR reviews:
+
+### File Experts
+
+**Query**: Who has touched these files most frequently?
+
+```cypher
+UNWIND $paths AS path
+MATCH (pr:PullRequest {repo: $repo})-[:TOUCHES]->(f:File {repo: $repo, path: path})
+MATCH (pr)-[:AUTHORED_BY]->(d:Developer)
+RETURN d.login AS login, count(*) AS touch_count
+ORDER BY touch_count DESC
+LIMIT 5
+```
+
+**Python wrapper**:
+
+```python
+# app/services/graph_builder.py:294-324
+async def get_file_experts(
+    repo_full_name: str,
+    file_paths: list[str],
+    top_k: int = 5,
+) -> list[dict]:
+    async with get_session() as session:
+        result = await session.run(
+            """
+            UNWIND $paths AS path
+            MATCH (pr:PullRequest {repo: $repo})-[:TOUCHES]->(f:File {repo: $repo, path: path})
+            MATCH (pr)-[:AUTHORED_BY]->(d:Developer)
+            RETURN d.login AS login, count(*) AS touch_count
+            ORDER BY touch_count DESC
+            LIMIT $top_k
+            """,
+            repo=repo_full_name,
+            paths=file_paths,
+            top_k=top_k,
+        )
+        return [{"login": r["login"], "touch_count": r["touch_count"]} async for r in result]
+```
+
+**Example output**:
+
+```json
+[
+  {"login": "alice", "touch_count": 23},
+  {"login": "bob", "touch_count": 12},
+  {"login": "charlie", "touch_count": 7}
+]
+```
+
+**Used in review**:
+
+```markdown
+FILE EXPERTS (developers who frequently touch these files):
+- alice (23 PRs)
+- bob (12 PRs)
+```
+
+### Related Past PRs
+
+**Query**: Which PRs touched the same files (structural similarity)?
+
+```cypher
+UNWIND $paths AS path
+MATCH (pr:PullRequest {repo: $repo})-[:TOUCHES]->(f:File {repo: $repo, path: path})
+WHERE ($exclude IS NULL OR pr.number <> $exclude)
+  AND pr.verdict IS NOT NULL
+WITH pr, count(DISTINCT f) AS overlap
+ORDER BY overlap DESC
+LIMIT $top_k
+RETURN pr.number AS number,
+       pr.title AS title,
+       pr.author AS author,
+       pr.verdict AS verdict,
+       overlap
+```
+
+**Example output**:
+
+```json
+[
+  {
+    "number": 120,
+    "title": "Add JWT refresh token logic",
+    "author": "alice",
+    "verdict": "APPROVE",
+    "overlap": 3
+  },
+  {
+    "number": 98,
+    "title": "Implement token refresh endpoint",
+    "author": "bob",
+    "verdict": "REQUEST_CHANGES",
+    "overlap": 2
+  }
+]
+```
+
+**Used in review**:
+
+```markdown
+RELATED PAST PRs (touched same files):
+- PR #120 [APPROVE] by alice: Add JWT refresh token logic (overlap: 3 files)
+- PR #98 [REQUEST_CHANGES] by bob: Implement token refresh endpoint (overlap: 2 files)
+```
+
+### Linked Issues
+
+**Query**: Which issues were closed by this PR?
+
+```cypher
+UNWIND $nums AS num
+OPTIONAL MATCH (i:Issue {repo: $repo, number: num})
+OPTIONAL MATCH (pr:PullRequest)-[:CLOSES]->(i)
+RETURN num,
+       i IS NOT NULL AS found,
+       collect(pr.number) AS closed_by
+```
+
+**Example output**:
+
+```json
+[
+  {"number": 123, "found": true, "closed_by": [42, 87]},
+  {"number": 456, "found": false, "closed_by": []}
+]
+```
+
+## Analytics Queries
+
+The graph powers dashboard analytics:
+
+### File Hotspots
+
+**Query**: Which files are touched most frequently (high churn)?
+
+```cypher
+MATCH (pr:PullRequest {repo: $repo})-[:TOUCHES]->(f:File)
+RETURN f.path AS path, f.language AS language, count(pr) AS pr_count
+ORDER BY pr_count DESC
+LIMIT 10
+```
+
+**Example output**:
+
+```json
+[
+  {"path": "src/auth/middleware.py", "language": "Python", "pr_count": 45},
+  {"path": "src/api/routes.py", "language": "Python", "pr_count": 32}
+]
+```
+
+**Interpretation**: High churn files often need:
+- Better test coverage
+- Refactoring to reduce complexity
+- Stronger code ownership
+
+### High-Risk Files
+
+**Query**: Which files repeatedly get `REQUEST_CHANGES` verdict (fragile code)?
+
+```cypher
+MATCH (pr:PullRequest {repo: $repo, verdict: "REQUEST_CHANGES"})-[:TOUCHES]->(f:File)
+RETURN f.path AS path, f.language AS language, count(pr) AS risk_count
+ORDER BY risk_count DESC
+LIMIT 8
+```
+
+**Example output**:
+
+```json
+[
+  {"path": "src/auth/jwt.py", "language": "Python", "risk_count": 12},
+  {"path": "src/payment/stripe.py", "language": "Python", "risk_count": 8}
+]
+```
+
+**Interpretation**: Files with repeated issues may benefit from:
+- Pair programming
+- Stronger linting rules
+- Architectural redesign
+
+### Dead Files
+
+**Query**: Which files in the repo have **never** been touched by any PR?
+
+```cypher
+MATCH (r:Repository {full_name: $repo})-[:CONTAINS]->(f:File)
+WHERE NOT (f)<-[:TOUCHES]-()
+RETURN f.path AS path, f.language AS language
+ORDER BY f.path
+LIMIT 12
+```
+
+**Interpretation**: Dead files are likely:
+- Legacy code no longer in use
+- Autogenerated files (should be gitignored)
+- Test fixtures
+
+### Code Ownership
+
+**Query**: For each high-churn file, who is the dominant contributor?
+
+```cypher
+MATCH (pr:PullRequest {repo: $repo})-[:AUTHORED_BY]->(d:Developer),
+      (pr)-[:TOUCHES]->(f:File)
+WITH f.path AS path, d.login AS dev, count(*) AS touches
+ORDER BY path, touches DESC
+WITH path,
+     collect({dev: dev, touches: touches})[0] AS top_owner,
+     sum(touches) AS total_touches
+WHERE total_touches >= 2
+RETURN path, top_owner.dev AS owner, top_owner.touches AS owner_touches, total_touches
+ORDER BY total_touches DESC
+LIMIT 10
+```
+
+**Example output**:
+
+```json
+[
+  {
+    "path": "src/auth/middleware.py",
+    "owner": "alice",
+    "owner_touches": 23,
+    "total_touches": 45
+  }
+]
+```
+
+**Interpretation**: `alice` owns 51% of changes to `src/auth/middleware.py` — she should be the primary reviewer for auth-related PRs.
+
+### Developer Expertise
+
+**Query**: For each developer, which top-level directories do they contribute to most?
+
+```cypher
+MATCH (pr:PullRequest {repo: $repo})-[:AUTHORED_BY]->(d:Developer),
+      (pr)-[:TOUCHES]->(f:File)
+WITH d.login AS dev,
+     CASE WHEN size(split(f.path, '/')) > 1
+          THEN split(f.path, '/')[0]
+          ELSE '(root)' END AS directory,
+     count(*) AS touches
+ORDER BY dev, touches DESC
+WITH dev,
+     collect({directory: directory, touches: touches})[0..4] AS top_dirs,
+     sum(touches) AS total_touches
+RETURN dev, top_dirs, total_touches
+ORDER BY total_touches DESC
+LIMIT 8
+```
+
+**Example output**:
+
+```json
+[
+  {
+    "dev": "alice",
+    "top_dirs": [
+      {"directory": "src", "touches": 67},
+      {"directory": "tests", "touches": 23}
+    ],
+    "total_touches": 90
+  }
+]
+```
+
+**Interpretation**: `alice` is a backend specialist (primarily touches `src/` and `tests/`).
+
+## Graph Constraints & Indexes
+
+Nectr creates constraints and indexes on startup for performance:
+
+```cypher
+-- app/core/neo4j_schema.py:10-45
+
+-- Unique constraints (also create indexes)
+CREATE CONSTRAINT repo_full_name_unique IF NOT EXISTS
+FOR (r:Repository) REQUIRE r.full_name IS UNIQUE;
+
+CREATE CONSTRAINT file_composite_unique IF NOT EXISTS
+FOR (f:File) REQUIRE (f.repo, f.path) IS UNIQUE;
+
+CREATE CONSTRAINT pr_composite_unique IF NOT EXISTS
+FOR (pr:PullRequest) REQUIRE (pr.repo, pr.number) IS UNIQUE;
+
+CREATE CONSTRAINT developer_login_unique IF NOT EXISTS
+FOR (d:Developer) REQUIRE d.login IS UNIQUE;
+
+CREATE CONSTRAINT issue_composite_unique IF NOT EXISTS
+FOR (i:Issue) REQUIRE (i.repo, i.number) IS UNIQUE;
+
+-- Indexes for common query patterns
+CREATE INDEX pr_verdict IF NOT EXISTS
+FOR (pr:PullRequest) ON (pr.verdict);
+
+CREATE INDEX file_language IF NOT EXISTS
+FOR (f:File) ON (f.language);
+```
+
+<Info>
+  Constraints are created **idempotently** using `IF NOT EXISTS` so they're safe to run on every deployment.
+</Info>
+
+## Graph Visualization
+
+View the graph in Neo4j Browser:
+
+```cypher
+// Show recent PR activity
+MATCH (pr:PullRequest {repo: "org/repo"})-[:TOUCHES]->(f:File)
+MATCH (pr)-[:AUTHORED_BY]->(d:Developer)
+WHERE pr.reviewed_at > "2024-03-01"
+RETURN pr, f, d
+LIMIT 50
+```
+
+<img src="/images/neo4j-browser.png" alt="Neo4j Browser Visualization" />
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="When to rescan the graph" icon="refresh-cw">
+    **Recommended**:
+    - After bulk refactoring (files moved/renamed)
+    - When graph queries return stale data
+    - Once per month for large repos (to remove deleted files)
+    
+    **Not needed**:
+    - After every PR (PR indexing is automatic)
+    - After minor code changes (graph updates incrementally)
+  </Accordion>
+
+  <Accordion title="How to handle monorepos" icon="folder-tree">
+    For repos > 100k files:
+    - GitHub truncates the tree — Nectr logs a warning and continues
+    - Consider splitting into multiple repos if queries are slow
+    - Neo4j Community Edition handles ~1M nodes comfortably
+  </Accordion>
+
+  <Accordion title="Graph size and performance" icon="database">
+    Typical graph sizes:
+    - **Small repo** (50 files, 100 PRs): ~250 nodes, 500 edges
+    - **Medium repo** (500 files, 1,000 PRs): ~2,500 nodes, 5,000 edges
+    - **Large repo** (5,000 files, 10,000 PRs): ~25,000 nodes, 50,000 edges
+    
+    Query latency (with indexes):
+    - File experts: < 50ms
+    - Related PRs: < 100ms
+    - Code ownership: < 200ms
+  </Accordion>
+
+  <Accordion title="Backup and disaster recovery" icon="shield">
+    Neo4j data is stored in the cloud (Neo4j Aura) or self-hosted.
+    
+    **To backup**:
+    ```bash
+    # Export graph to Cypher statements
+    cypher-shell "CALL apoc.export.cypher.all('backup.cypher', {})"
+    ```
+    
+    **To restore**:
+    ```bash
+    cypher-shell < backup.cypher
+    ```
+    
+    <Warning>
+      The graph is **derived data** — it can always be rebuilt from GitHub by reconnecting repos and rescanning.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Semantic Memory" icon="brain" href="/features/semantic-memory">
+    Learn how Mem0 complements the graph with semantic context
+  </Card>
+
+  <Card title="Analytics Dashboard" icon="chart-line" href="/dashboard/analytics">
+    Visualize graph insights: file hotspots, code ownership, team expertise
+  </Card>
+
+  <Card title="PR Reviews" icon="git-pull-request" href="/features/pr-reviews">
+    See how graph data powers contextual PR reviews
+  </Card>
+
+  <Card title="API Reference" icon="code" href="/api/endpoints/repos">
+    Explore graph-related API endpoints
+  </Card>
+</CardGroup>

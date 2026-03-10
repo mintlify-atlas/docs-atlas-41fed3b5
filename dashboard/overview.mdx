@@ -1,0 +1,174 @@
+---
+title: Dashboard Overview
+description: Main dashboard with analytics, activity timeline, and contributor insights
+icon: home
+---
+
+The Dashboard Overview is your command center for monitoring PR reviews, team performance, and repository activity across all connected repositories.
+
+## Key Features
+
+### Real-Time Statistics
+
+The dashboard displays 5 core metrics at the top:
+
+<CardGroup cols={2}>
+  <Card title="Total Reviews" icon="git-pull-request">
+    Total number of PR reviews completed by Nectr with a 13-day sparkline showing activity trends
+  </Card>
+  <Card title="Success Rate" icon="check-circle">
+    Percentage of successfully completed reviews vs failed reviews
+  </Card>
+  <Card title="Approved PRs" icon="check-circle">
+    Number of PRs that received an **APPROVE** verdict from the AI
+  </Card>
+  <Card title="Changes Requested" icon="x-circle">
+    Number of PRs where the AI recommended changes
+  </Card>
+  <Card title="Avg Process Time" icon="clock">
+    Average time taken to complete a review in seconds
+  </Card>
+</CardGroup>
+
+### Activity Timeline
+
+The **PR Reviews** bar chart shows daily activity over the last 14 days:
+
+- **Green bars**: Successfully completed reviews
+- **Red bars**: Failed reviews
+- **Interactive hover**: View exact counts for each day
+- **Peak highlighting**: The day with the most completed reviews is highlighted
+
+### Verdict Distribution
+
+A segment bar and detailed breakdown showing:
+
+- **Approve** (green): PRs recommended for merge
+- **Request Changes** (red): PRs needing improvements
+- **Needs Discussion** (amber): PRs requiring team discussion
+
+Each verdict includes a percentage bar and total count.
+
+### Issue Breakdown
+
+At the bottom of the Verdict Distribution panel, you'll see issues categorized by severity:
+
+- **Critical**: High-priority issues requiring immediate attention
+- **Moderate**: Medium-priority concerns
+- **Minor**: Low-priority suggestions
+
+## Top Contributors
+
+The dashboard features contributor cards showing:
+
+<Info>
+  This section pulls data from the GitHub Contributors API for the default branch.
+</Info>
+
+- **Avatar & Username**: Color-coded contributor badge with GitHub username
+- **Commit Stats**: Total commits, additions (+), and deletions (-)
+- **Weekly Activity Chart**: 12-week commit history with interactive bars
+- **Rank Badge**: Contributors ranked by total commits
+
+### Contributor Insights
+
+Each contributor card displays:
+
+```
+@username
+1,234 commits  +45,678  -12,345
+[12-week bar chart]
+```
+
+Hover over the bar chart to see commit counts for specific weeks.
+
+## Repository Activity Table
+
+The **Repository Activity** section shows per-repo stats for the last 30 days:
+
+| Column | Description |
+|--------|-------------|
+| **Repository** | Repository name with branch icon |
+| **PRs** | Total pull requests |
+| **Merge Rate** | Percentage of merged PRs (color-coded: green 80%+, amber 50-79%, red below 50%) |
+| **Issues** | Number of issues flagged |
+| **Top Verdict** | Most common AI verdict for this repo |
+| **Last PR** | Time since last PR activity |
+
+## Recent PR Reviews
+
+The bottom section displays the 8 most recent reviews with:
+
+- **Status dot**: Visual indicator (green = completed, amber = processing, red = failed)
+- **PR Title**: Clickable link to the pull request
+- **Repository**: Shortened repo name
+- **Author**: GitHub username
+- **Files**: Number of files analyzed
+- **Verdict**: AI recommendation badge
+- **Status**: Current review status
+- **Time**: Relative timestamp (e.g., "2h ago", "3d ago")
+
+<Warning>
+  If no reviews exist, the dashboard displays an empty state prompting you to connect a repository.
+</Warning>
+
+## Navigation
+
+The dashboard includes section tabs at the top:
+
+- **Overview** (current page)
+- **Reviews**: Full list of all PR reviews
+- **Code Health**: Repository health metrics
+- **Team**: Developer profiles and team insights
+
+### Filter Options
+
+Two dropdown filters in the top-right:
+
+- **Time Range**: Last 30 days (default)
+- **Export**: Download analytics data
+
+## Technical Details
+
+### Data Sources
+
+The dashboard fetches data from multiple endpoints:
+
+- `/api/analytics/summary` - Core metrics and statistics
+- `/api/analytics/timeline` - Daily activity data (14 days)
+- `/api/analytics/insights` - 30-day insights and verdicts
+- `/api/reviews` - Recent review list (limit: 8)
+- `/api/repos` - Connected repositories
+- GitHub Contributors API - Commit statistics
+
+### Real-Time Updates
+
+All data automatically refreshes when:
+
+- A new PR review completes
+- Repository connection status changes
+- Page regains focus after being backgrounded
+
+<Tip>
+  The dashboard uses React Query for intelligent caching and automatic background updates.
+</Tip>
+
+## Color System
+
+Nectr uses a consistent color palette:
+
+- **Amber (#F5C000)**: Brand color, primary actions, pending states
+- **Success (#4ADB4A)**: Approved, completed, positive metrics
+- **Danger (#DB4A4A)**: Changes requested, failed, critical issues
+- **Border (#232323)**: Card and section dividers
+- **Card (#141414)**: Dark card backgrounds
+
+## Empty States
+
+If you haven't connected any repositories or completed reviews yet, the dashboard shows helpful empty states:
+
+- **No Reviews**: Prompts you to connect a repo and open a PR
+- **No Contributors**: Shows when no contributor data is available
+- **No Repository Activity**: Displays when the insights API returns no data
+
+Each empty state includes an icon, descriptive text, and a call-to-action.

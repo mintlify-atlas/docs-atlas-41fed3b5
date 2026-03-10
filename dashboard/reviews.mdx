@@ -1,0 +1,299 @@
+---
+title: PR Reviews
+description: Browse and search all AI-generated code reviews with advanced filtering
+icon: git-pull-request
+---
+
+The PR Reviews page displays a comprehensive list of all code reviews performed by Nectr, with powerful filtering and search capabilities.
+
+## Overview
+
+This page provides a table view of all pull request reviews, showing:
+
+- Review status and completion state
+- PR metadata (title, repo, author, file count)
+- AI verdict recommendations
+- Timestamps and activity indicators
+
+## Header
+
+The page header shows:
+
+- **Title**: "PR Reviews"
+- **Count**: Total number of reviews matching current filters (e.g., "47 reviews")
+- **Refresh Button**: Manually refetch the review list
+
+## Filters
+
+Three filter controls let you narrow down the review list:
+
+### Search Bar
+
+<Info>
+  The search is case-insensitive and searches across PR title, repository name, and author username.
+</Info>
+
+Placeholder text: *"Search by PR title, repo, author..."*
+
+**Search examples:**
+
+- `fix bug` - Finds PRs with "fix" or "bug" in the title
+- `owner/repo` - Filters by repository name
+- `@username` - Shows reviews by a specific author
+
+### Status Filter
+
+Dropdown with 5 options:
+
+- **All Statuses** (default) - Shows all reviews
+- **Completed** - Successfully finished reviews
+- **Processing** - Reviews currently in progress
+- **Pending** - Reviews waiting to start
+- **Failed** - Reviews that encountered errors
+
+### Limit Filter
+
+Controls how many reviews to display:
+
+- **20** (default)
+- **50**
+- **100**
+
+<Tip>
+  Higher limits may take longer to load. Start with 20 and increase if needed.
+</Tip>
+
+## Review Table
+
+Each review row displays:
+
+### Pull Request Column
+
+- **Status Dot**: Color-coded indicator
+  - Green: Completed
+  - Amber: Processing/Pending
+  - Red: Failed
+- **PR Number**: Small badge (e.g., `#123`)
+- **Title**: Full PR title (bold, hover effect)
+- **External Link Icon**: Opens PR on GitHub in new tab
+
+### Metadata
+
+Below the title:
+
+```
+owner/repo · @author · 15 files
+```
+
+- **Repository**: Truncated repo name
+- **Author**: GitHub username
+- **File Count**: Number of files analyzed
+
+### Status Badges
+
+<CardGroup cols={2}>
+  <Card title="Review Status" icon="spinner">
+    Shows completion state: Pending, Processing, Completed, Failed
+  </Card>
+  <Card title="PR Status" icon="git-merge">
+    Shows PR state: Open (amber), Merged (green), Closed (gray)
+  </Card>
+  <Card title="Verdict" icon="check-circle">
+    AI recommendation: Approve (green), Request Changes (red), Discuss (amber)
+  </Card>
+  <Card title="Timestamp" icon="clock">
+    Relative time: "2m ago", "3h ago", "5d ago"
+  </Card>
+</CardGroup>
+
+## Review Status Types
+
+| Status | Color | Meaning |
+|--------|-------|----------|
+| **Pending** | Amber | Review queued, waiting to start |
+| **Processing** | Amber | AI currently analyzing the PR |
+| **Completed** | Green | Review finished successfully |
+| **Failed** | Red | Error occurred during review |
+
+## Verdict Types
+
+The AI assigns one of three verdicts:
+
+<AccordionGroup>
+  <Accordion title="APPROVE" icon="check-circle">
+    The PR looks good and is recommended for merge. No critical issues found.
+    
+    **Badge color**: Green
+  </Accordion>
+  <Accordion title="REQUEST_CHANGES" icon="x-circle">
+    The PR has issues that should be addressed before merging. Critical or moderate concerns identified.
+    
+    **Badge color**: Red
+  </Accordion>
+  <Accordion title="NEEDS_DISCUSSION" icon="message-square">
+    The PR requires team discussion. Complex changes or architectural decisions detected.
+    
+    **Badge color**: Amber
+  </Accordion>
+</AccordionGroup>
+
+## Row Interaction
+
+### Hover Effects
+
+- Background changes to `#191919` (subtle highlight)
+- PR title color changes to amber
+- Cursor changes to pointer
+
+### Click Behavior
+
+Clicking anywhere on a row navigates to the detailed review page:
+
+```
+/reviews/{review_id}
+```
+
+<Warning>
+  Clicking the external link icon opens GitHub instead of the review detail page.
+</Warning>
+
+## Loading State
+
+While fetching reviews:
+
+- **8 skeleton rows** with animated pulse effect
+- Each skeleton has two lines (title + metadata)
+- Background: `#1a1a1a`
+
+## Empty State
+
+If no reviews match your filters:
+
+```
+🔍 No reviews yet
+
+Connect a repo to start getting AI reviews
+
+[Connect a Repo]
+```
+
+- Icon: GitPullRequest (32px, gray)
+- Call-to-action button links to `/repos`
+
+## Desktop vs Mobile
+
+### Desktop (lg+)
+
+- Full table with all columns visible
+- Column headers: "Pull Request" | "Status"
+- Grid layout for optimal spacing
+
+### Mobile
+
+- Simplified single-column layout
+- Status badges stack vertically
+- Timestamps hidden to save space
+
+## Technical Details
+
+### API Endpoint
+
+```
+GET /api/reviews?limit={limit}&status={status}&search={search}
+```
+
+**Query parameters:**
+
+- `limit` (optional): Number of results (default: 20)
+- `status` (optional): Filter by review status
+- `search` (optional): Search term for title/repo/author
+
+### Data Model
+
+```typescript
+interface Review {
+  id: number;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  pr_status: 'open' | 'merged' | 'closed';
+  pr_title?: string;
+  pr_number?: number;
+  pr_url?: string;
+  repo_name?: string;
+  author?: string;
+  files_analyzed?: number;
+  ai_summary?: string;
+  created_at: string;
+}
+```
+
+### Verdict Extraction
+
+Verdicts are extracted from the `ai_summary` field using pattern matching:
+
+```typescript
+function extractVerdict(summary?: string): string | undefined {
+  if (!summary) return undefined;
+  if (summary.includes('**APPROVE**')) return 'APPROVE';
+  if (summary.includes('**REQUEST_CHANGES**')) return 'REQUEST_CHANGES';
+  if (summary.includes('**NEEDS_DISCUSSION**')) return 'NEEDS_DISCUSSION';
+  return undefined;
+}
+```
+
+## Timestamp Formatting
+
+Relative timestamps follow this pattern:
+
+- Under 60 minutes: `"Xm ago"`
+- Under 24 hours: `"Xh ago"`
+- Over 24 hours: `"Xd ago"`
+
+Full format shown on desktop:
+
+```
+"Mar 8, 10:30 AM"
+```
+
+## Keyboard Accessibility
+
+- Tab through review rows
+- Enter/Space to open review detail
+- Cmd/Ctrl + Click to open in new tab
+
+## Performance
+
+<CardGroup cols={2}>
+  <Card title="Pagination" icon="list">
+    Use the Limit filter instead of infinite scroll for better performance.
+  </Card>
+  <Card title="Caching" icon="database">
+    React Query caches results for 5 minutes, reducing API calls.
+  </Card>
+  <Card title="Optimistic Updates" icon="zap">
+    When a review completes, the list updates instantly without refetch.
+  </Card>
+  <Card title="Background Refresh" icon="rotate">
+    Data automatically refetches when the page regains focus.
+  </Card>
+</CardGroup>
+
+## Common Workflows
+
+### Find Failed Reviews
+
+1. Set Status filter to "Failed"
+2. Review error messages in the detail view
+3. Re-trigger review via GitHub PR comment: `/nectr review`
+
+### Track PR Progress
+
+1. Search for your PR by title
+2. Monitor status badge changes (Pending → Processing → Completed)
+3. Click through to view detailed feedback
+
+### Weekly Review Summary
+
+1. Set Limit to 100
+2. Set Status to "Completed"
+3. Scan verdicts to identify high-risk PRs
+4. Export data using the Dashboard export feature

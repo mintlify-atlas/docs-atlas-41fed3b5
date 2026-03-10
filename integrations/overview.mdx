@@ -1,0 +1,96 @@
+---
+title: "Integrations Overview"
+description: "Connect Nectr with GitHub, Linear, Sentry, and Slack to enrich PR reviews with live context from your development workflow"
+---
+
+## What are Integrations?
+
+Nectr integrations pull live context into every PR review — linked issues, production errors, team discussions, and more. By connecting external tools via the **Model Context Protocol (MCP)**, Nectr's AI reviewer gains a complete picture of what's happening across your engineering stack.
+
+## Available Integrations
+
+<CardGroup cols={2}>
+  <Card title="GitHub" icon="github" href="/integrations/github">
+    OAuth, webhooks, and REST API for PR data, issues, and review comments
+  </Card>
+  <Card title="Linear" icon="chart-line" href="/integrations/linear">
+    Pull linked issues and task context via MCP during PR reviews
+  </Card>
+  <Card title="Sentry" icon="bug" href="/integrations/sentry">
+    Surface production errors for files changed in a PR
+  </Card>
+  <Card title="Slack" icon="slack" href="/integrations/slack">
+    Fetch relevant channel messages as review context
+  </Card>
+</CardGroup>
+
+## How Integrations Work
+
+Nectr uses two integration patterns:
+
+### 1. Native REST APIs
+
+**GitHub** is the only native integration. Nectr directly calls the GitHub REST API to fetch PR diffs, files, issues, and post review comments.
+
+- **Required:** `GITHUB_PAT`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
+- **Managed by:** `app/integrations/github/client.py`
+
+### 2. MCP Protocol (Inbound)
+
+All other integrations (**Linear**, **Sentry**, **Slack**) use the [Model Context Protocol](/integrations/mcp-protocol). Nectr acts as an **MCP client** and pulls context from external MCP servers during reviews.
+
+- **Optional:** Each integration requires an `_MCP_URL` and API key
+- **Managed by:** `app/mcp/client.py`
+- **Behavior:** If an MCP server is not configured, Nectr logs a warning and continues the review without that context (graceful degradation)
+
+## Outbound MCP Server
+
+Nectr also **exposes** its own review data as an MCP server so external tools (Linear bots, Claude Desktop, Slack apps) can pull PR verdicts, contributor stats, and repo health metrics.
+
+<Card title="Nectr MCP Server" icon="server" href="/integrations/mcp-server/setup">
+  Expose Nectr's review data to external MCP clients
+</Card>
+
+## Configuration
+
+All integrations are configured via environment variables in `.env`. See the [Environment Variables](/deploy/environment-variables) reference for details.
+
+### Quick Start
+
+1. **GitHub** (required for all reviews):
+   ```bash
+   GITHUB_PAT=ghp_...
+   GITHUB_CLIENT_ID=...
+   GITHUB_CLIENT_SECRET=...
+   ```
+
+2. **Linear** (optional — enriches reviews with linked issues):
+   ```bash
+   LINEAR_MCP_URL=http://linear-mcp-server:8001
+   LINEAR_API_KEY=lin_api_...
+   ```
+
+3. **Sentry** (optional — shows production errors for changed files):
+   ```bash
+   SENTRY_MCP_URL=http://sentry-mcp-server:8002
+   SENTRY_AUTH_TOKEN=...
+   ```
+
+4. **Slack** (optional — includes relevant channel messages):
+   ```bash
+   SLACK_MCP_URL=http://slack-mcp-server:8003
+   ```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Protocol" icon="network-wired" href="/integrations/mcp-protocol">
+    Understand how Nectr uses the Model Context Protocol
+  </Card>
+  <Card title="GitHub Setup" icon="github" href="/integrations/github">
+    Configure OAuth, webhooks, and PAT tokens
+  </Card>
+  <Card title="Run MCP Server" icon="server" href="/integrations/mcp-server/setup">
+    Expose Nectr's data to external MCP clients
+  </Card>
+</CardGroup>

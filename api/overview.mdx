@@ -1,0 +1,95 @@
+---
+title: 'API Overview'
+description: 'Introduction to the Nectr API'
+---
+
+## Base URL
+
+```
+http://localhost:8000
+```
+
+For production deployments, replace with your configured `BACKEND_URL`.
+
+## API Version
+
+Current version: **v1**
+
+All API endpoints are prefixed with `/api/v1` (except authentication and health endpoints).
+
+## Response Format
+
+All API responses are returned in JSON format. Successful responses return a 2xx status code, while errors return appropriate 4xx or 5xx codes.
+
+### Success Response
+
+```json
+{
+  "status": "success",
+  "data": { ... }
+}
+```
+
+### Error Response
+
+```json
+{
+  "detail": "Error message describing what went wrong"
+}
+```
+
+## Common Status Codes
+
+- **200 OK**: Request succeeded
+- **201 Created**: Resource created successfully
+- **400 Bad Request**: Invalid request parameters
+- **401 Unauthorized**: Authentication required or failed
+- **403 Forbidden**: Insufficient permissions
+- **404 Not Found**: Resource not found
+- **502 Bad Gateway**: External service (GitHub, Neo4j) failure
+- **503 Service Unavailable**: Required service not configured
+
+## Rate Limiting
+
+Nectr does not impose rate limits on API requests. However, operations that interact with GitHub are subject to [GitHub's rate limits](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting).
+
+## Timestamps
+
+All timestamps are returned in ISO 8601 format and stored in UTC:
+
+```
+2025-03-10T14:30:00.123456
+```
+
+## Pagination
+
+Some endpoints support pagination using query parameters:
+
+- `page`: Page number (1-indexed, default: 1)
+- `per_page`: Items per page (default: 20, max: 100)
+- `limit`: Maximum items to return (varies by endpoint)
+
+## Error Handling
+
+When an error occurs, the API returns a JSON object with a `detail` field describing the error:
+
+```json
+{
+  "detail": "Repo not connected or access denied"
+}
+```
+
+Common error scenarios:
+- **Token expiration**: Session expired errors require re-authentication via GitHub OAuth
+- **Missing services**: Some features require Neo4j or Mem0 configuration
+- **External API failures**: GitHub API failures return 502 status codes
+
+## SDK Support
+
+Nectr is built with FastAPI and automatically generates OpenAPI documentation:
+
+- **Interactive docs**: `/docs` (Swagger UI)
+- **OpenAPI spec**: `/openapi.json`
+- **ReDoc**: `/redoc`
+
+You can use these to generate client SDKs in any language using tools like [openapi-generator](https://openapi-generator.tech/).
