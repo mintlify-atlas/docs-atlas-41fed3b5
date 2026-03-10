@@ -285,23 +285,14 @@ Control AI behavior via environment variables:
 
 ```bash .env
 # Model selection
-ANTHROPIC_MODEL=claude-sonnet-4.6-20250514  # Default
+ANTHROPIC_MODEL=claude-sonnet-4-5-20250929  # Default
 
 # Parallel agents
 PARALLEL_REVIEW_AGENTS=false  # Set true for specialized agents
-
-# Review depth
-MAX_CONTEXT_FILES=10  # How many related files to analyze
-MAX_RELATED_PRS=5     # Historical PRs to consider
-
-# Strictness
-REQUIRE_TESTS=true          # Fail reviews without tests
-REQUIRE_TYPE_HINTS=false    # Enforce type annotations
-BLOCK_TODO_COMMENTS=false   # Prevent merging with TODO comments
 ```
 
 <Note>
-These environment variables are examples—check `app/core/config.py` in the source for the full list.
+See the [Environment Variables](/developers/environment-variables) guide for the complete list of configuration options from `app/core/config.py`.
 </Note>
 
 ## Best Practices
