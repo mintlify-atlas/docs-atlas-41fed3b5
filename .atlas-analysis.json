@@ -1,0 +1,163 @@
+{
+  "projectType": "saas",
+  "projectName": "Nectr",
+  "projectDescription": "AI-powered PR review agent that automatically reviews pull requests with intelligent feedback, security checks, and contextual analysis.",
+  "theme": "palm",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4f46e5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/pr-reviews",
+              "features/knowledge-graph",
+              "features/semantic-memory",
+              "features/ai-analysis"
+            ]
+          },
+          {
+            "group": "Dashboard",
+            "pages": [
+              "dashboard/overview",
+              "dashboard/repositories",
+              "dashboard/reviews",
+              "dashboard/analytics",
+              "dashboard/team"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "integrations/overview",
+              "integrations/mcp-protocol"
+            ]
+          },
+          {
+            "group": "Available Integrations",
+            "pages": [
+              "integrations/github",
+              "integrations/linear",
+              "integrations/sentry",
+              "integrations/slack"
+            ]
+          },
+          {
+            "group": "MCP Server",
+            "pages": [
+              "integrations/mcp-server/setup",
+              "integrations/mcp-server/tools",
+              "integrations/mcp-server/resources"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/endpoints/health",
+              "api/endpoints/auth",
+              "api/endpoints/repos",
+              "api/endpoints/reviews",
+              "api/endpoints/analytics",
+              "api/endpoints/memory",
+              "api/endpoints/webhooks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Self-Hosting",
+            "pages": [
+              "developers/local-development",
+              "developers/deployment",
+              "developers/environment-variables",
+              "developers/database-setup"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "developers/architecture/overview",
+              "developers/architecture/backend",
+              "developers/architecture/frontend",
+              "developers/architecture/review-flow"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "developers/parallel-agents",
+              "developers/webhook-setup",
+              "developers/neo4j-schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated AI-powered PR reviews with intelligent feedback",
+    "Neo4j knowledge graph tracking file ownership and PR relationships",
+    "Semantic memory with Mem0 for project patterns and developer habits",
+    "MCP bidirectional integration with Linear, Sentry, and Slack",
+    "Real-time review analytics and team metrics dashboard",
+    "Parallel specialized AI agents for security, performance, and style analysis",
+    "GitHub OAuth integration with webhook-based PR monitoring",
+    "Self-hostable with full data ownership"
+  ],
+  "publicApiSurface": [
+    "POST /api/v1/webhooks/github - GitHub webhook receiver",
+    "GET /api/v1/repos - List repositories",
+    "POST /api/v1/repos/{owner}/{repo}/install - Connect repository",
+    "DELETE /api/v1/repos/{owner}/{repo}/install - Disconnect repository",
+    "POST /api/v1/repos/{owner}/{repo}/rescan - Rebuild Neo4j graph",
+    "GET /api/v1/reviews - PR review history",
+    "GET /api/v1/analytics - Team metrics and analytics",
+    "GET /api/v1/memory - List memories for repository",
+    "POST /api/v1/memory - Add custom rule or memory",
+    "DELETE /api/v1/memory/{id} - Delete memory",
+    "GET /api/v1/memory/project-map - Project context summary",
+    "GET /auth/github - GitHub OAuth flow",
+    "GET /auth/github/callback - OAuth callback",
+    "GET /auth/me - Current user profile",
+    "POST /auth/logout - Logout user",
+    "GET /health - Health check",
+    "GET /mcp/sse - MCP SSE event stream",
+    "POST /mcp/messages - MCP JSON-RPC messages",
+    "get_recent_reviews - MCP tool for recent PR reviews",
+    "get_contributor_stats - MCP tool for contributor statistics",
+    "get_pr_verdict - MCP tool for PR verdict",
+    "get_repo_health - MCP tool for repository health metrics"
+  ]
+}
